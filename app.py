@@ -9,10 +9,23 @@ st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 @st.cache_data(show_spinner=False)
 def load_recos(path):
     df = pd.read_excel(path)
+    # Map common alternative names
+    if "Cluster" not in df.columns and "Cluster_Name" in df.columns:
+        df = df.rename(columns={"Cluster_Name": "Cluster"})
+    # Ensure required columns exist
     for col in ["Client","Cluster"]:
         if col not in df.columns:
             df[col] = np.nan
-    date_cols = [c for c in df.columns if c.lower().startswith("predicted_next_purchase_date".lower())] or [c for c in df.columns if c.lower() in {"date","recommended_date","next_purchase_date"}]
+    # Detect event date column (priority: Predicted_Purchase_Date)
+    date_cols = []
+    if "EventDate" in df.columns:
+        date_cols = ["EventDate"]
+    if not date_cols and "Predicted_Purchase_Date" in df.columns:
+        date_cols = ["Predicted_Purchase_Date"]
+    if not date_cols:
+        date_cols = [c for c in df.columns if c.lower().startswith("predicted_next_purchase_date".lower())]
+    if not date_cols:
+        date_cols = [c for c in df.columns if c.lower() in {"date","recommended_date","next_purchase_date"}]
     if date_cols:
         date_col = date_cols[0]
     else:
@@ -37,26 +50,7 @@ def load_recos(path):
     df = df.rename(columns=rename_map)
     return df
 
-@st.cache_data(show_spinner=False)
-def load_txns(path):
-    try:
-        tx = pd.read_excel(path)
-    except Exception:
-        return pd.DataFrame()
-    colmap = {
-        "Client number": "Client",
-        "Product Name": "Product",
-        "Transaction Date": "Date",
-        "Transaction Amount (SGD)": "Amount",
-    }
-    for k,v in colmap.items():
-        if k in tx.columns and v not in tx.columns:
-            tx[v] = tx[k]
-    keep = [c for c in ["Client","Product","Date","Amount"] if c in tx.columns]
-    tx = tx[keep].copy()
-    if "Date" in tx.columns:
-        tx["Date"] = pd.to_datetime(tx["Date"], errors="coerce")
-    return tx
+# No transactions file reference needed
 
 cluster_colors = {
     "Passive Long-Term Investor": "#1f77b4",
@@ -65,54 +59,24 @@ cluster_colors = {
     "New/Single-Transaction": "#7f7f7f",
 }
 
-path_reco = st.sidebar.text_input("Recommendations file", value="recommendationOutput.xlsx")
-path_tx = st.sidebar.text_input("Transactions file (for recent product)", value="cleaned_data.xlsx")
-
-df = load_recos(path_reco)
-tx = load_txns(path_tx)
-
-if tx.empty:
-    last_tx = pd.DataFrame(columns=["Client","Recent_Product","Recent_Date"])
-else:
-    tx_sorted = tx.sort_values(["Client","Date"]).dropna(subset=["Client"]) if "Date" in tx.columns else tx
-    last = tx_sorted.groupby("Client").tail(1)
-    last_tx = last[["Client"]].copy()
-    last_tx["Recent_Product"] = last["Product"].values if "Product" in last.columns else np.nan
-    last_tx["Recent_Date"] = last["Date"].values if "Date" in last.columns else pd.NaT
-
-if not last_tx.empty:
-    df = df.merge(last_tx, on="Client", how="left")
-else:
-    if "Recent_Product" not in df.columns:
-        df["Recent_Product"] = np.nan
-    if "Recent_Date" not in df.columns:
-        df["Recent_Date"] = pd.NaT
+df = load_recos("recommendationOutput.xlsx")
+if "Recent_Product" not in df.columns:
+    df["Recent_Product"] = np.nan
+if "Recent_Date" not in df.columns:
+    df["Recent_Date"] = pd.NaT
 
 if "EventDate" not in df.columns:
     df["EventDate"] = pd.NaT
 
-# Fallback: compute EventDate from transactions if missing
-if df["EventDate"].isna().any() and not tx.empty and "Date" in tx.columns:
-    tx_s = tx.dropna(subset=["Client"]).copy()
-    tx_s["Date"] = pd.to_datetime(tx_s["Date"], errors="coerce")
-    tx_s = tx_s.sort_values(["Client", "Date"]).dropna(subset=["Date"]).copy()
-    # Compute days since last
-    tx_s["Days_Since_Last"] = tx_s.groupby("Client")["Date"].diff().dt.days
-    agg = tx_s.groupby("Client").agg(
-        Last_Date=("Date", "max"),
-        Median_Interval=("Days_Since_Last", lambda s: float(s.dropna().median()) if s.dropna().size else np.nan)
-    ).reset_index()
-    # Default median interval 30 if missing
-    agg["Median_Interval"].fillna(30.0, inplace=True)
-    agg["Fallback_EventDate"] = agg["Last_Date"] + pd.to_timedelta(agg["Median_Interval"].round().astype(int), unit="D")
-    df = df.merge(agg[["Client", "Fallback_EventDate"]], on="Client", how="left")
-    # Fill only missing EventDate
-    df["EventDate"] = pd.to_datetime(df["EventDate"], errors="coerce")
-    df["EventDate"].fillna(df["Fallback_EventDate"], inplace=True)
-    df.drop(columns=[c for c in ["Fallback_EventDate"] if c in df.columns], inplace=True)
-
 min_date = pd.to_datetime(df["EventDate"].min()) if df["EventDate"].notna().any() else None
 max_date = pd.to_datetime(df["EventDate"].max()) if df["EventDate"].notna().any() else None
+
+# Status summary to help verify input
+st.caption(
+    f"Loaded {len(df)} rows | EventDate non-null: {int(df['EventDate'].notna().sum())} | "
+    f"Clusters: {len([c for c in df['Cluster'].dropna().unique().tolist()])} | "
+    f"Date range: {min_date.date() if min_date is not None else '-'} to {max_date.date() if max_date is not None else '-'}"
+)
 
 st.sidebar.markdown("### Filters")
 start_date, end_date = st.sidebar.date_input(
@@ -122,48 +86,33 @@ start_date, end_date = st.sidebar.date_input(
 )
 clusters = sorted([c for c in df["Cluster"].dropna().unique().tolist()])
 selected_clusters = st.sidebar.multiselect("Clusters", options=clusters, default=clusters)
-min_amt = float(np.nanmin(df["Recommended_Amount_P50"])) if df["Recommended_Amount_P50"].notna().any() else 0.0
-max_amt = float(np.nanmax(df["Recommended_Amount_P50"])) if df["Recommended_Amount_P50"].notna().any() else 0.0
-amt_range = st.sidebar.slider("P50 amount range (SGD)", min_value=0.0, max_value=max(1000.0, max_amt), value=(0.0, max_amt))
 client_q = st.sidebar.text_input("Search client")
 
 mask = df["EventDate"].between(pd.to_datetime(start_date), pd.to_datetime(end_date))
 if selected_clusters:
     mask &= df["Cluster"].isin(selected_clusters)
-if df["Recommended_Amount_P50"].notna().any():
-    mask &= df["Recommended_Amount_P50"].fillna(0).between(amt_range[0], amt_range[1])
 if client_q:
     mask &= df["Client"].astype(str).str.contains(client_q, case=False, na=False)
 
 fdf = df[mask].copy()
 
-by_date = fdf.groupby(fdf["EventDate"].dt.date)
+by_date_cluster = fdf.assign(EventDay=fdf["EventDate"].dt.date).groupby(["EventDay","Cluster"], dropna=True)
 
 events = []
-for d, g in by_date:
+for (d, cn), g in by_date_cluster:
     g = g.sort_values("Recommended_Amount_P50", ascending=False)
     first_client = str(g.iloc[0]["Client"]) if len(g) else ""
     extra = len(g) - 1
     title = first_client if extra <= 0 else f"{first_client} + {extra} others"
     start_str = pd.to_datetime(d).strftime("%Y-%m-%d")
     events.append({
-        "id": f"day-{start_str}",
+        "id": f"day-{start_str}-{str(cn)}",
         "title": title,
         "start": start_str,
         "allDay": True,
-        "color": "#444444",
-        "extendedProps": {"date": start_str}
+        "color": cluster_colors.get(cn, "#999999"),
+        "extendedProps": {"date": start_str, "cluster": str(cn)}
     })
-    clusters_on_day = g["Cluster"].dropna().unique().tolist()
-    for idx, cn in enumerate(clusters_on_day):
-        events.append({
-            "id": f"dot-{start_str}-{idx}",
-            "title": "",
-            "start": start_str,
-            "allDay": True,
-            "color": cluster_colors.get(cn, "#999999"),
-            "extendedProps": {"date": start_str, "cluster": cn}
-        })
 
 options = {
     "initialView": "dayGridMonth",
@@ -185,7 +134,14 @@ if cal.get("eventClick"):
 
 if clicked_date:
     day = pd.to_datetime(clicked_date).date()
-    day_df = by_date.get_group(day).reset_index(drop=True) if day in by_date.groups else pd.DataFrame(columns=fdf.columns)
+    clicked_cluster = None
+    if cal.get("eventClick") and cal["eventClick"].get("event"):
+        clicked_cluster = cal["eventClick"]["event"].get("extendedProps", {}).get("cluster")
+    if clicked_cluster is not None and len(clicked_cluster) > 0:
+        sel = (fdf["EventDate"].dt.date == day) & (fdf["Cluster"].astype(str) == str(clicked_cluster))
+        day_df = fdf[sel].reset_index(drop=True)
+    else:
+        day_df = fdf[fdf["EventDate"].dt.date == day].reset_index(drop=True)
     if day_df.empty:
         st.info("No records for this date.")
     else:
@@ -197,22 +153,89 @@ if clicked_date:
         i = int(np.clip(i, 0, len(day_df)-1))
         row = day_df.iloc[i]
         with col1:
-            st.markdown(f"#### {row['Client']}")
-            st.caption(str(row.get('Cluster', '')))
-            st.metric("Recommended P50", f"${row.get('Recommended_Amount_P50', np.nan):,.0f}")
-            st.write("Recent product:", str(row.get("Recent_Product", "")))
-            rd = row.get("Recent_Date", pd.NaT)
-            st.write("Recent date:", (pd.to_datetime(rd).date() if pd.notna(rd) else "-"))
-            st.write("Recommended product:", str(row.get("Recent_Product", "")))
-            st.write("Recommended amount:", f"${row.get('Recommended_Amount_P50', np.nan):,.0f}")
+            client = str(row.get('Client', ''))
+            cluster = str(row.get('Cluster', ''))
+            cluster_color = cluster_colors.get(cluster, '#777777')
+
+            # Header: Client name big
+            st.markdown(f"<div style='font-size:26px; font-weight:700; margin-bottom:6px;'>{client}</div>", unsafe_allow_html=True)
+
+            # Cluster badge with background color
+            st.markdown(
+                f"<span style='display:inline-block; background:{cluster_color}; color:#ffffff; padding:4px 10px; border-radius:14px; font-weight:600; font-size:12px;'>"
+                f"{cluster}</span>",
+                unsafe_allow_html=True,
+            )
+
+            # Spacing
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+            # Recent purchase info (normal)
+            recent_date = row.get('Current_ProductType_Date', row.get('Recent_Date', pd.NaT))
+            if pd.notna(recent_date):
+                try:
+                    recent_date = pd.to_datetime(recent_date).date()
+                except Exception:
+                    pass
+            recent_ptype = row.get('Current_ProductType', '')
+            st.markdown(f"<div>Recent Purchase Date: <strong>{recent_date if pd.notna(recent_date) else '-'}</strong></div>", unsafe_allow_html=True)
+            st.markdown(f"<div>Recent Product Type: <strong>{recent_ptype if pd.notna(recent_ptype) else '-'}</strong></div>", unsafe_allow_html=True)
+
+            # Recommended info (bold and slightly bigger)
+            rec_ptype = row.get('Recommended_ProductType', '')
+            pred_date = row.get('Predicted_Purchase_Date', row.get('EventDate', pd.NaT))
+            if pd.notna(pred_date):
+                try:
+                    pred_date = pd.to_datetime(pred_date).date()
+                except Exception:
+                    pass
+            rec_amt = row.get('Recommended_Amount_P50', np.nan)
+
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type: {rec_ptype if pd.notna(rec_ptype) else '-'}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-weight:700; font-size:15px;'>Predicted Purchase Date: {pred_date if pd.notna(pred_date) else '-'}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type Amount: ${rec_amt:,.0f}</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Confidence (bold green)
+            conf = row.get('Confidence', None)
+            conf_txt = '-' if conf is None or (isinstance(conf, float) and np.isnan(conf)) else f"{conf}"
+            st.markdown(
+                f"<div style='font-weight:700; color:#16a34a;'>Confidence: {conf_txt}</div>",
+                unsafe_allow_html=True,
+            )
+
+            # Top 10% Buyer flag
+            top_flag = row.get('Top_10pct_Buyer', None)
+            is_top = False
+            if isinstance(top_flag, str):
+                is_top = top_flag.strip().lower() in {"true","yes","1"}
+            elif isinstance(top_flag, (bool, np.bool_)):
+                is_top = bool(top_flag)
+            elif isinstance(top_flag, (int, float)) and not np.isnan(top_flag):
+                is_top = bool(top_flag)
+            top_color = '#16a34a' if is_top else '#dc2626'
+            top_text = 'True' if is_top else 'False'
+            st.markdown(
+                f"<div style='font-weight:700; color:{top_color};'>Top 10% Buyer: {top_text}</div>",
+                unsafe_allow_html=True,
+            )
         with col2:
             if st.button("Prev", key=f"prev-{clicked_date}"):
                 st.session_state[idx_state_key] = (i - 1) % len(day_df)
-                st.experimental_rerun()
+                st.rerun()
         with col3:
             if st.button("Next", key=f"next-{clicked_date}"):
                 st.session_state[idx_state_key] = (i + 1) % len(day_df)
-                st.experimental_rerun()
+                st.rerun()
         if st.button("Show all", key=f"showall-{clicked_date}"):
             st.dataframe(day_df[[c for c in day_df.columns if c not in {"EventDate"}]].sort_values("Recommended_Amount_P50", ascending=False))
             st.download_button(
@@ -222,7 +245,6 @@ if clicked_date:
                 mime="text/csv",
             )
 
-st.subheader("Table")
 st.dataframe(fdf.sort_values(["EventDate","Recommended_Amount_P50"], ascending=[True, False]))
 
 csv = fdf.to_csv(index=False).encode("utf-8")

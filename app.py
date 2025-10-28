@@ -88,13 +88,33 @@ clusters = sorted([c for c in df["Cluster"].dropna().unique().tolist()])
 selected_clusters = st.sidebar.multiselect("Clusters", options=clusters, default=clusters)
 client_q = st.sidebar.text_input("Search client")
 
+# Sidebar legend for clusters
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Legend**")
+for name, col in cluster_colors.items():
+    st.sidebar.markdown(
+        f"<div style='display:flex; align-items:center; gap:8px;'>"
+        f"<span style='display:inline-block; width:12px; height:12px; background:{col}; border-radius:6px;'></span>"
+        f"<span>{name}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
 mask = df["EventDate"].between(pd.to_datetime(start_date), pd.to_datetime(end_date))
 if selected_clusters:
     mask &= df["Cluster"].isin(selected_clusters)
 if client_q:
-    mask &= df["Client"].astype(str).str.contains(client_q, case=False, na=False)
+    mask &= df["Client"].astype(str).str.strip() == str(client_q).strip()
 
 fdf = df[mask].copy()
+
+# Determine focus date for calendar if an exact client is searched
+focus_date_str = None
+if client_q and not fdf.empty:
+    # Use earliest event date for the client in the filtered frame
+    first_date = pd.to_datetime(fdf.sort_values("EventDate")["EventDate"].iloc[0], errors="coerce")
+    if pd.notna(first_date):
+        focus_date_str = first_date.strftime("%Y-%m-%d")
 
 by_date_cluster = fdf.assign(EventDay=fdf["EventDate"].dt.date).groupby(["EventDay","Cluster"], dropna=True)
 
@@ -125,23 +145,24 @@ options = {
     "eventDisplay": "block",
 }
 
+# If we have a client search, center the calendar on that client's event date
+if focus_date_str is not None:
+    options["initialDate"] = focus_date_str
+
 cal = calendar(events=events, options=options)
 
 clicked_date = None
-if cal.get("eventClick"):
-    ev = cal["eventClick"]["event"]
-    clicked_date = ev.get("extendedProps", {}).get("date") or ev.get("start")
+if cal.get("dateClick"):
+    clicked_date = cal["dateClick"].get("dateStr") or cal["dateClick"].get("date")
+if not clicked_date and cal.get("eventClick"):
+    ev = cal["eventClick"].get("event")
+    if ev:
+        clicked_date = ev.get("extendedProps", {}).get("date") or ev.get("start")
 
 if clicked_date:
     day = pd.to_datetime(clicked_date).date()
-    clicked_cluster = None
-    if cal.get("eventClick") and cal["eventClick"].get("event"):
-        clicked_cluster = cal["eventClick"]["event"].get("extendedProps", {}).get("cluster")
-    if clicked_cluster is not None and len(clicked_cluster) > 0:
-        sel = (fdf["EventDate"].dt.date == day) & (fdf["Cluster"].astype(str) == str(clicked_cluster))
-        day_df = fdf[sel].reset_index(drop=True)
-    else:
-        day_df = fdf[fdf["EventDate"].dt.date == day].reset_index(drop=True)
+    # Always show all entries for the clicked date (across clusters)
+    day_df = fdf[fdf["EventDate"].dt.date == day].reset_index(drop=True)
     if day_df.empty:
         st.info("No records for this date.")
     else:

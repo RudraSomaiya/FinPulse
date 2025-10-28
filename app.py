@@ -9,7 +9,7 @@ st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 @st.cache_data(show_spinner=False)
 def load_recos(path):
     df = pd.read_excel(path)
-    for col in ["Client","Cluster_Name"]:
+    for col in ["Client","Cluster"]:
         if col not in df.columns:
             df[col] = np.nan
     date_cols = [c for c in df.columns if c.lower().startswith("predicted_next_purchase_date".lower())] or [c for c in df.columns if c.lower() in {"date","recommended_date","next_purchase_date"}]
@@ -23,8 +23,7 @@ def load_recos(path):
     amount_cols = {
         "Recommended_Amount_P10": ["Recommended_Amount_P10","P10","Rec_P10"],
         "Recommended_Amount_P50": ["Recommended_Amount_P50","P50","Rec_P50","Predicted_Amount_SGD"],
-        "Recommended_Amount_P90": ["Recommended_Amount_P90","P90","Rec_P90"],
-        "Baseline_Amount": ["Baseline_Amount","Baseline"]
+        "Recommended_Amount_P90": ["Recommended_Amount_P90","P90","Rec_P90"]
     }
     for target, candidates in amount_cols.items():
         if target not in df.columns:
@@ -121,7 +120,7 @@ start_date, end_date = st.sidebar.date_input(
     value=(min_date.date() if min_date is not None else datetime.today().date(),
            (max_date.date() if max_date is not None else (datetime.today()+timedelta(days=30)).date())),
 )
-clusters = sorted([c for c in df["Cluster_Name"].dropna().unique().tolist()])
+clusters = sorted([c for c in df["Cluster"].dropna().unique().tolist()])
 selected_clusters = st.sidebar.multiselect("Clusters", options=clusters, default=clusters)
 min_amt = float(np.nanmin(df["Recommended_Amount_P50"])) if df["Recommended_Amount_P50"].notna().any() else 0.0
 max_amt = float(np.nanmax(df["Recommended_Amount_P50"])) if df["Recommended_Amount_P50"].notna().any() else 0.0
@@ -130,15 +129,13 @@ client_q = st.sidebar.text_input("Search client")
 
 mask = df["EventDate"].between(pd.to_datetime(start_date), pd.to_datetime(end_date))
 if selected_clusters:
-    mask &= df["Cluster_Name"].isin(selected_clusters)
+    mask &= df["Cluster"].isin(selected_clusters)
 if df["Recommended_Amount_P50"].notna().any():
     mask &= df["Recommended_Amount_P50"].fillna(0).between(amt_range[0], amt_range[1])
 if client_q:
     mask &= df["Client"].astype(str).str.contains(client_q, case=False, na=False)
 
 fdf = df[mask].copy()
-
-st.title("Recommendations Calendar")
 
 by_date = fdf.groupby(fdf["EventDate"].dt.date)
 
@@ -157,7 +154,7 @@ for d, g in by_date:
         "color": "#444444",
         "extendedProps": {"date": start_str}
     })
-    clusters_on_day = g["Cluster_Name"].dropna().unique().tolist()
+    clusters_on_day = g["Cluster"].dropna().unique().tolist()
     for idx, cn in enumerate(clusters_on_day):
         events.append({
             "id": f"dot-{start_str}-{idx}",
@@ -179,7 +176,6 @@ options = {
     "eventDisplay": "block",
 }
 
-st.subheader("Calendar")
 cal = calendar(events=events, options=options)
 
 clicked_date = None
@@ -202,7 +198,7 @@ if clicked_date:
         row = day_df.iloc[i]
         with col1:
             st.markdown(f"#### {row['Client']}")
-            st.caption(str(row.get('Cluster_Name', '')))
+            st.caption(str(row.get('Cluster', '')))
             st.metric("Recommended P50", f"${row.get('Recommended_Amount_P50', np.nan):,.0f}")
             st.write("Recent product:", str(row.get("Recent_Product", "")))
             rd = row.get("Recent_Date", pd.NaT)

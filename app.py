@@ -1,8 +1,10 @@
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from streamlit_calendar import calendar
 import numpy as np
+from llm_parser import parse_instructions
+from rules import apply_actions, commit_to_excel
 
 st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 
@@ -60,6 +62,13 @@ cluster_colors = {
 }
 
 df = load_recos("recommendationOutput.xlsx")
+# If overrides were applied previously, use them
+if "applied_df" in st.session_state and st.session_state.get("use_overrides", False):
+    try:
+        if isinstance(st.session_state["applied_df"], pd.DataFrame) and len(st.session_state["applied_df"]) > 0:
+            df = st.session_state["applied_df"].copy()
+    except Exception:
+        pass
 if "Recent_Product" not in df.columns:
     df["Recent_Product"] = np.nan
 if "Recent_Date" not in df.columns:
@@ -77,6 +86,45 @@ st.caption(
     f"Clusters: {len([c for c in df['Cluster'].dropna().unique().tolist()])} | "
     f"Date range: {min_date.date() if min_date is not None else '-'} to {max_date.date() if max_date is not None else '-'}"
 )
+
+st.sidebar.markdown("### Natural language overrides")
+nl_text = st.sidebar.text_area("Type instructions (e.g., 'Don't recommend anything to Client 1; Double amounts for Client 2; Only STOCK for Client 4; Always add BONDS for Client 7 on the 1st monthly.')", height=100)
+col_parse, col_apply = st.sidebar.columns(2)
+if col_parse.button("Parse"):
+    actions = parse_instructions(nl_text)
+    st.session_state["actions"] = actions
+    st.session_state["summary"] = {}
+    st.session_state["applied_df"] = None
+    if not actions or not actions.get("rules"):
+        st.sidebar.warning("No valid rules parsed.")
+    else:
+        st.sidebar.success(f"Parsed {len(actions.get('rules', []))} rule(s).")
+if col_apply.button("Apply"):
+    actions = st.session_state.get("actions", {})
+    if not actions or not actions.get("rules"):
+        st.sidebar.warning("Nothing to apply. Parse instructions first.")
+    else:
+        new_df, summary = apply_actions(df, actions, date.today())
+        st.session_state["applied_df"] = new_df
+        st.session_state["summary"] = summary
+        st.session_state["use_overrides"] = True
+        st.rerun()
+
+summary = st.session_state.get("summary", {})
+if summary:
+    st.sidebar.caption(f"Changes — Removed: {summary.get('removed',0)}, Modified: {summary.get('modified',0)}, Added: {summary.get('added',0)}")
+    if st.sidebar.button("Commit to Excel"):
+        try:
+            applied = st.session_state.get("applied_df")
+            if isinstance(applied, pd.DataFrame) and len(applied) > 0:
+                backup_path = commit_to_excel(applied, "recommendationOutput.xlsx")
+                st.sidebar.success(f"Saved. Backup: {backup_path if backup_path else 'none'}")
+                st.session_state["use_overrides"] = False
+                st.rerun()
+            else:
+                st.sidebar.warning("No applied data to save.")
+        except Exception as e:
+            st.sidebar.error(f"Save failed: {e}")
 
 st.sidebar.markdown("### Filters")
 start_date, end_date = st.sidebar.date_input(

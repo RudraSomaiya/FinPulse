@@ -143,14 +143,35 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
             if not clients:
                 continue
             pre = len(df)
-            df = df[~df[COL_CLIENT].astype(str).isin(clients)].reset_index(drop=True)
+            mask = df[COL_CLIENT].astype(str).isin(clients)
+            # Optional date filter to remove only specific entries
+            date_val = rule.get("date")
+            if date_val:
+                try:
+                    target_ts = pd.to_datetime(date_val, errors="coerce")
+                    if pd.notna(target_ts) and COL_EVENT_DATE in df.columns:
+                        mask &= df[COL_EVENT_DATE].dt.date == target_ts.date()
+                except Exception:
+                    pass
+            df = df[~mask].reset_index(drop=True)
             removed += (pre - len(df))
 
         elif rtype == "amount_multiplier":
             if not clients:
                 continue
-            factor = float(rule.get("factor", 1.0))
+            raw_factor = rule.get("factor")
+            # If factor is not provided, assume "double" as sensible default for phrases like "double the amount"
+            factor = float(raw_factor) if raw_factor is not None else 2.0
             mask = df[COL_CLIENT].astype(str).isin(clients)
+            # Optional date filter (single-day scope)
+            date_val = rule.get("date")
+            if date_val:
+                try:
+                    target_ts = pd.to_datetime(date_val, errors="coerce")
+                    if pd.notna(target_ts) and COL_EVENT_DATE in df.columns:
+                        mask &= df[COL_EVENT_DATE].dt.date == target_ts.date()
+                except Exception:
+                    pass
             if scope:
                 mask &= _match_scope(df, scope)
             for col in (COL_P10, COL_P50, COL_P90):
@@ -226,6 +247,7 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
                 for dt_ in future_dates:
                     overrides = {
                         COL_EVENT_DATE: pd.to_datetime(dt_),
+                        COL_CONF: "",
                         COL_IS_GENERATED: True,
                         COL_GEN_RULE: "change_frequency",
                         COL_RULE_REASON: reason,
@@ -292,10 +314,12 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
                     candidate = (pd.Timestamp(year=cur.year, month=cur.month, day=1) + pd.offsets.MonthEnd(0))
                 overrides = {
                     COL_EVENT_DATE: candidate,
-                    COL_REC_TYPE: product_type if product_type else base_row.get(COL_REC_TYPE, ""),
+                    # If no product_type is specified, leave it blank instead of copying
+                    COL_REC_TYPE: product_type if product_type else "",
                     COL_P10: p10,
                     COL_P50: p50,
                     COL_P90: p90,
+                    COL_CONF: "",
                     COL_IS_GENERATED: True,
                     COL_IS_SEASONAL: True,
                     COL_GEN_RULE: "seasonality_inject",
@@ -337,11 +361,13 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
                     base = {
                         COL_CLIENT: str(client),
                         COL_CLUSTER: np.nan,
-                        COL_REC_TYPE: product_type,
+                        # If product_type missing, keep blank
+                        COL_REC_TYPE: product_type if product_type else "",
                         COL_P10: p10,
                         COL_P50: p50,
                         COL_P90: p90,
                         COL_EVENT_DATE: target_ts,
+                        COL_CONF: "",
                         COL_IS_GENERATED: True,
                         COL_IS_SEASONAL: False,
                         COL_GEN_RULE: "add_entry",
@@ -354,10 +380,11 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
                     base_row = tmpl.iloc[-1]
                     overrides = {
                         COL_EVENT_DATE: target_ts,
-                        COL_REC_TYPE: product_type if product_type else base_row.get(COL_REC_TYPE, ""),
+                        COL_REC_TYPE: product_type if product_type else "",
                         COL_P10: p10,
                         COL_P50: p50,
                         COL_P90: p90,
+                        COL_CONF: "",
                         COL_IS_GENERATED: True,
                         COL_IS_SEASONAL: False,
                         COL_GEN_RULE: "add_entry",
@@ -366,6 +393,103 @@ def apply_actions(df: pd.DataFrame, actions: Dict[str, Any], today: date | None 
                     base = _append_row(base_row, overrides)
                 df = pd.concat([df, pd.DataFrame([base])], ignore_index=True)
                 added += 1
+
+        elif rtype == "add_recurring":
+            client = clients[0] if clients else None
+            if not client:
+                continue
+            product_type = str(rule.get("product_type", "")).strip()
+            amount_p50 = rule.get("amount_p50")
+            amount_p10 = rule.get("amount_p10")
+            amount_p90 = rule.get("amount_p90")
+            if amount_p50 is None:
+                continue
+            p50 = _safe_amount(amount_p50)
+            if amount_p10 is None or amount_p90 is None:
+                ip10, ip90 = _infer_p10_p90_from_p50(p50)
+                p10 = _safe_amount(rule.get("amount_p10", ip10))
+                p90 = _safe_amount(rule.get("amount_p90", ip90))
+            else:
+                p10 = _safe_amount(amount_p10)
+                p90 = _safe_amount(amount_p90)
+
+            freq = str(rule.get("frequency", "monthly")).strip().lower()
+            day_of_week = str(rule.get("day_of_week", "")).strip().lower()
+            dom = rule.get("day_of_month")
+
+            start_date_val = rule.get("start_date")
+            end_date_val = rule.get("end_date")
+            start = pd.to_datetime(start_date_val, errors="coerce") if start_date_val else today_ts
+            if pd.isna(start):
+                start = today_ts
+            end = pd.to_datetime(end_date_val, errors="coerce") if end_date_val else (start + pd.DateOffset(months=12))
+            if pd.isna(end):
+                end = start + pd.DateOffset(months=12)
+
+            # Base row template (if any) to inherit non-core columns
+            base_rows = df[df[COL_CLIENT].astype(str) == str(client)]
+            if base_rows.empty:
+                base_row = pd.Series({
+                    COL_CLIENT: str(client),
+                    COL_CLUSTER: np.nan,
+                })
+            else:
+                base_rows = base_rows.copy()
+                base_rows[COL_EVENT_DATE] = pd.to_datetime(base_rows[COL_EVENT_DATE], errors="coerce")
+                base_rows = base_rows.sort_values(COL_EVENT_DATE)
+                base_row = base_rows.iloc[-1]
+
+            cur = start
+            new_rows = []
+            while cur <= end:
+                d = cur
+                if freq == "daily":
+                    pass  # every day in range
+                elif freq == "weekly":
+                    if day_of_week:
+                        # Move to the next matching weekday if needed
+                        target_wd = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].index(day_of_week) if day_of_week in ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] else d.weekday()
+                        while d.weekday() != target_wd and d <= end:
+                            d = d + timedelta(days=1)
+                    else:
+                        # if no day_of_week specified, treat like daily
+                        pass
+                elif freq == "monthly":
+                    # set to given day of month or stay same day if not provided
+                    if dom is not None:
+                        try:
+                            d = pd.Timestamp(year=d.year, month=d.month, day=int(dom))
+                        except Exception:
+                            d = (pd.Timestamp(year=d.year, month=d.month, day=1) + pd.offsets.MonthEnd(0))
+                # Only add if within range
+                if d <= end:
+                    overrides = {
+                        COL_EVENT_DATE: d,
+                        COL_REC_TYPE: product_type if product_type else "",
+                        COL_P10: p10,
+                        COL_P50: p50,
+                        COL_P90: p90,
+                        COL_CONF: "",
+                        COL_IS_GENERATED: True,
+                        COL_IS_SEASONAL: True,
+                        COL_GEN_RULE: "add_recurring",
+                        COL_RULE_REASON: reason,
+                    }
+                    new_rows.append(_append_row(base_row, overrides))
+
+                # Advance cursor
+                if freq == "daily":
+                    cur = cur + timedelta(days=1)
+                elif freq == "weekly":
+                    cur = d + timedelta(weeks=1)
+                elif freq == "monthly":
+                    cur = d + pd.offsets.MonthEnd(1) + pd.offsets.Day(1)
+                else:
+                    cur = cur + timedelta(days=30)
+
+            if new_rows:
+                df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                added += len(new_rows)
 
         else:
             # Unknown rule type: ignore safely

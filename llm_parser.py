@@ -31,7 +31,8 @@ SYSTEM_PROMPT = (
     "    {type: 'change_recommendation', client: string|[string], product_type: string, reason?: string},\n"
     "    {type: 'seasonality_inject', client: string, product_type: string, day_of_month: number, months?: [number], amount_p50: number|'match_last', amount_p10?: number, amount_p90?: number, effective_from: string, effective_to?: string, as_additional?: boolean, reason?: string},\n"
     "    {type: 'change_frequency', client: string|[string], frequency: 'daily'|'weekly'|'biweekly'|'monthly'|'quarterly', start_from?: string, count?: number, as_additional?: boolean, reason?: string},\n"
-    "    {type: 'add_entry', client: string, date: string, product_type: string, amount_p50: number, amount_p10?: number, amount_p90?: number, reason?: string}\n"
+    "    {type: 'add_entry', client: string, date: string, product_type?: string, amount_p50: number, amount_p10?: number, amount_p90?: number, reason?: string},\n"
+    "    {type: 'add_recurring', client: string, product_type?: string, amount_p50: number, amount_p10?: number, amount_p90?: number, frequency: 'daily'|'weekly'|'monthly', day_of_week?: string, day_of_month?: number, start_date?: string, end_date?: string, reason?: string}\n"
     "  ]\n"
     "}\n"
     "Allowed product types include STOCK, BONDS, and any present in the data. Return strictly JSON."
@@ -58,13 +59,17 @@ def _validate_actions(obj: Dict[str, Any]) -> Dict[str, Any]:
             "seasonality_inject",
             "change_frequency",
             "add_entry",
+            "add_recurring",
+            # tolerated aliases that we normalize downstream
+            "delete_where",
+            "remove_entry",
         }:
             continue
         # Keep only known keys
         allowed_keys = {
             "type","client","factor","scope","where","reason","product_type","amount_p10","amount_p50","amount_p90",
             "frequency","start_from","count","as_additional","day_of_month","months","effective_from","effective_to",
-            "date"
+            "date","day_of_week","start_date","end_date"
         }
         cr = {k: v for k, v in r.items() if k in allowed_keys}
         cr["type"] = rtype

@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, date
@@ -9,7 +11,8 @@ from rules import apply_actions, commit_to_excel
 st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 
 @st.cache_data(show_spinner=False)
-def load_recos(path):
+def load_recos(path, mtime):
+    """Load recommendations with cache keyed by file path and modification time."""
     df = pd.read_excel(path)
     # Map common alternative names
     if "Cluster" not in df.columns and "Cluster_Name" in df.columns:
@@ -60,8 +63,9 @@ cluster_colors = {
     "Ultra High-Net-Worth": "#2ca02c",
     "New/Single-Transaction": "#7f7f7f",
 }
-
-df = load_recos("recommendationOutput.xlsx")
+rec_path = "recommendationOutput.xlsx"
+rec_mtime = os.path.getmtime(rec_path) if os.path.exists(rec_path) else 0
+df = load_recos(rec_path, rec_mtime)
 # If overrides were applied previously, use them
 if "applied_df" in st.session_state and st.session_state.get("use_overrides", False):
     try:
@@ -88,7 +92,7 @@ st.caption(
 )
 
 st.sidebar.markdown("### Natural language overrides")
-nl_text = st.sidebar.text_area("Type instructions (e.g., 'Don't recommend anything to Client 1; Double amounts for Client 2; Only STOCK for Client 4; Always add BONDS for Client 7 on the 1st monthly.')", height=100)
+nl_text = st.sidebar.text_area("Type instructions", height=100)
 col_parse, col_apply = st.sidebar.columns(2)
 if col_parse.button("Parse"):
     actions = parse_instructions(nl_text)

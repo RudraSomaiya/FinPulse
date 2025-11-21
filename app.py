@@ -98,7 +98,6 @@ if col_parse.button("Parse"):
     actions = parse_instructions(nl_text)
     st.session_state["actions"] = actions
     st.session_state["summary"] = {}
-    st.session_state["applied_df"] = None
     if not actions or not actions.get("rules"):
         st.sidebar.warning("No valid rules parsed.")
     else:

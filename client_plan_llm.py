@@ -122,11 +122,15 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
 
     parts.append("\nHistorical transaction pattern (no dates; only product types and amounts):")
     if transactions:
-        for t in transactions[:30]:  # limit to avoid extremely long prompts
+        for t in transactions:
             p = str(t.get("product", "-"))
             a = t.get("amount")
             if a is not None:
-                parts.append(f"- {p}: {a:,.0f} SGD")
+                try:
+                    a_val = float(a)
+                    parts.append(f"- {p}: {a_val:,.0f} SGD")
+                except Exception:
+                    parts.append(f"- {p}: {a} SGD")
             else:
                 parts.append(f"- {p}")
     else:
@@ -152,15 +156,20 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
     parts.append(
         "\n\nInstructions for your answer (very important):\n"
         "- Write your answer as natural prose in 1 or 2 short paragraphs. Do not use bullet points or markdown.\n"
+        "- Start with a polite greeting that includes the client's name (for example, 'Hi B75.'), then describe their "
+        "profile and current investment behaviour in your own words.\n"
         "- Focus on a future plan only. Do NOT mention specific calendar dates; instead use vague time expressions like "
         "'over the next few months', 'later in the year', 'from time to time', etc.\n"
-        "- Do NOT give exact numerical investment amounts. Talk about relative sizing (for example, smaller exploratory "
-        "positions versus larger core holdings) using your own wording.\n"
-        "- Explicitly balance exploration and exploitation: build on product types that match the client's past behaviour "
-        "and risk profile, while also introducing a few prudent new product types if appropriate.\n"
-        "- Vary your phrasing and structure; do not follow a fixed template across clients.\n"
-        "- Briefly explain the rationale for your plan in plain language, as if speaking to an expert who will explain it "
-        "to the client."
+        "- Propose how the client could allocate their portfolio between core products (that match their history and "
+        "cluster) and exploratory products. When you are confident, you may suggest approximate percentage ranges "
+        "(for example, 'about 60–70% in DPMS and ETFs, and 20–30% in stocks or bonds'). If you are not confident about "
+        "precise ranges, use qualitative wording instead (for example, 'most of the portfolio' versus 'a smaller portion').\n"
+        "- Always mention both the potential upside (for example, yield or diversification benefits) and the potential "
+        "downside or risks (for example, short-term volatility or capital risk).\n"
+        "- Include a gentle next step and a polite closing sentence (for example, suggesting discussing ideas in the next "
+        "conversation and thanking the client).\n"
+        "- Vary your phrasing and structure; do not follow a fixed template across clients, but keep to this overall flow.\n"
+        "- Use plain language that a banker could read directly to the client."
     )
 
     return "\n".join(parts)

@@ -7,6 +7,7 @@ from streamlit_calendar import calendar
 import numpy as np
 from llm_parser import parse_instructions
 from rules import apply_actions, commit_to_excel
+from client_plan_llm import generate_client_plan
 
 st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 
@@ -55,6 +56,64 @@ def load_recos(path, mtime):
     df = df.rename(columns=rename_map)
     return df
 
+
+@st.cache_data(show_spinner=False)
+def load_transactions(path, mtime):
+    """Load cleaned transaction history (cleaned_data.xlsx)."""
+    if not os.path.exists(path) or not mtime:
+        return pd.DataFrame()
+    try:
+        tdf = pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
+    return tdf
+
+
+@st.cache_data(show_spinner=False)
+def build_client_history(tdf: pd.DataFrame):
+    """Build per-client transaction summary and product universe.
+
+    Groups by 'Client number' and collects product types and amounts.
+    Returns (history_map, product_universe).
+    """
+    if tdf is None or tdf.empty:
+        return {}, []
+
+    col_client_id = "Client number"
+    col_prod = "Product Type"
+    col_amt = "Transaction Amount (SGD)"
+
+    if col_client_id not in tdf.columns:
+        return {}, []
+
+    history = {}
+    product_universe = set()
+
+    for cid, g in tdf.groupby(col_client_id):
+        g = g.copy()
+        tx_list = []
+        if col_prod in g.columns:
+            product_universe.update(
+                {str(x).strip() for x in g[col_prod].dropna().astype(str).tolist()}
+            )
+        for _, r in g.iterrows():
+            prod = str(r.get(col_prod, "")).strip() if col_prod in g.columns else ""
+            amt = r.get(col_amt, None) if col_amt in g.columns else None
+            tx_list.append({"product": prod, "amount": amt})
+        avg_amt = None
+        if col_amt in g.columns and not g[col_amt].isna().all():
+            try:
+                avg_amt = float(g[col_amt].mean())
+            except Exception:
+                avg_amt = None
+        history[str(cid)] = {
+            "transactions": tx_list,
+            "avg_amount": avg_amt,
+            "total_tx": int(len(g)),
+        }
+
+    return history, sorted({p for p in product_universe if p})
+
 # No transactions file reference needed
 
 cluster_colors = {
@@ -66,6 +125,11 @@ cluster_colors = {
 rec_path = "recommendationOutput.xlsx"
 rec_mtime = os.path.getmtime(rec_path) if os.path.exists(rec_path) else 0
 df = load_recos(rec_path, rec_mtime)
+
+tx_path = "cleaned_data.xlsx"
+tx_mtime = os.path.getmtime(tx_path) if os.path.exists(tx_path) else 0
+tx_df = load_transactions(tx_path, tx_mtime)
+client_history_map, tx_product_universe = build_client_history(tx_df)
 # If overrides were applied previously, use them
 if "applied_df" in st.session_state and st.session_state.get("use_overrides", False):
     try:
@@ -80,6 +144,22 @@ if "Recent_Date" not in df.columns:
 
 if "EventDate" not in df.columns:
     df["EventDate"] = pd.NaT
+
+static_product_types = ["BONDS", "STOCK", "UT", "DPMS", "ETF"]
+reco_products = set()
+if "Recommended_ProductType" in df.columns:
+    reco_products.update(
+        {str(x).strip() for x in df["Recommended_ProductType"].dropna().astype(str).tolist()}
+    )
+if "Current_ProductType" in df.columns:
+    reco_products.update(
+        {str(x).strip() for x in df["Current_ProductType"].dropna().astype(str).tolist()}
+    )
+available_product_types = sorted(
+    {p for p in static_product_types} |
+    {p for p in tx_product_universe} |
+    {p for p in reco_products if p}
+)
 
 min_date = pd.to_datetime(df["EventDate"].min()) if df["EventDate"].notna().any() else None
 max_date = pd.to_datetime(df["EventDate"].max()) if df["EventDate"].notna().any() else None
@@ -300,6 +380,49 @@ if clicked_date:
                 f"<div style='font-weight:700; color:{top_color};'>Top 10% Buyer: {top_text}</div>",
                 unsafe_allow_html=True,
             )
+
+            # AI-generated future plan paragraph
+            client_id = str(row.get('Client', '')).strip()
+            hist = client_history_map.get(client_id, {})
+            tx_list = hist.get("transactions", [])
+
+            avg_hist = row.get('Avg_Historical_Amount', np.nan)
+            if (isinstance(avg_hist, float) and np.isnan(avg_hist)) or avg_hist is None:
+                avg_hist = hist.get("avg_amount")
+
+            total_tx = row.get('Total_Transactions', np.nan)
+            if (isinstance(total_tx, float) and np.isnan(total_tx)) or total_tx is None:
+                total_tx = hist.get("total_tx")
+
+            rec_ptype = row.get('Recommended_ProductType', '')
+            pred_amt = row.get('Predicted_Amount_SGD', row.get('Recommended_Amount_P50', np.nan))
+            conf_val = row.get('Confidence', None)
+
+            plan_context = {
+                "client_name": client,
+                "cluster": cluster,
+                "transactions": tx_list,
+                "recommended_product_type": rec_ptype,
+                "confidence": conf_val,
+                "predicted_amount_sgd": pred_amt,
+                "avg_historical_amount": avg_hist,
+                "total_transactions": total_tx,
+                "available_product_types": available_product_types,
+            }
+
+            if "client_plan_cache" not in st.session_state:
+                st.session_state["client_plan_cache"] = {}
+            cache = st.session_state["client_plan_cache"]
+            cache_key = client_id or client
+            plan_text = cache.get(cache_key)
+            if not plan_text:
+                with st.spinner("Generating future plan..."):
+                    plan_text = generate_client_plan(plan_context)
+                cache[cache_key] = plan_text
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            st.markdown("**Future Plan (AI Advisor)**")
+            st.markdown(plan_text)
         with col2:
             if st.button("Prev", key=f"prev-{clicked_date}"):
                 st.session_state[idx_state_key] = (i - 1) % len(day_df)

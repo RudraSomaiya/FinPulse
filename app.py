@@ -398,6 +398,9 @@ if clicked_date:
             pred_amt = row.get('Predicted_Amount_SGD', row.get('Recommended_Amount_P50', np.nan))
             conf_val = row.get('Confidence', None)
 
+            first_investment_date = row.get('First_Investment_Date', None)
+            total_invested_sgd = row.get('Total_Invested_SGD', None)
+
             plan_context = {
                 "client_name": client,
                 "cluster": cluster,
@@ -407,6 +410,8 @@ if clicked_date:
                 "predicted_amount_sgd": pred_amt,
                 "avg_historical_amount": avg_hist,
                 "total_transactions": total_tx,
+                "first_investment_date": first_investment_date,
+                "total_invested_sgd": total_invested_sgd,
                 "available_product_types": available_product_types,
             }
 

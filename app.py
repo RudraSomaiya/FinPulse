@@ -5,9 +5,14 @@ import streamlit as st
 from datetime import datetime, timedelta, date
 from streamlit_calendar import calendar
 import numpy as np
+import yfinance as yf
 from llm_parser import parse_instructions
 from rules import apply_actions, commit_to_excel
 from client_plan_llm import generate_client_plan
+
+TICKER_OVERRIDES = {
+    "TENCENT": "0700.HK",
+}
 
 st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 
@@ -378,6 +383,73 @@ if clicked_date:
             top_text = 'True' if is_top else 'False'
             st.markdown(
                 f"<div style='font-weight:700; color:{top_color};'>Top 10% Buyer: {top_text}</div>",
+                unsafe_allow_html=True,
+            )
+
+            # First purchase product and live price via yfinance
+            first_prod = None
+            first_date = None
+            first_price = None
+            if tx_df is not None and not tx_df.empty:
+                col_client_id = "Client number"
+                if col_client_id in tx_df.columns:
+                    client_id_str = str(row.get('Client', '')).strip()
+                    sub = tx_df[tx_df[col_client_id].astype(str) == client_id_str].copy()
+                    if not sub.empty:
+                        date_cols = [c for c in sub.columns if 'date' in c.lower()]
+                        if date_cols:
+                            dcol = date_cols[0]
+                            sub[dcol] = pd.to_datetime(sub[dcol], errors='coerce')
+                            sub = sub[sub[dcol].notna()]
+                            if not sub.empty:
+                                sub = sub.sort_values(dcol)
+                                first_row = sub.iloc[0]
+                                first_date = first_row[dcol]
+                                if pd.notna(first_date):
+                                    try:
+                                        first_date = pd.to_datetime(first_date).date()
+                                    except Exception:
+                                        pass
+                                prod_col = None
+                                # Prefer 'Product Name' for display and ticker; fall back to 'Product Type' only if needed
+                                if "Product Name" in sub.columns:
+                                    prod_col = "Product Name"
+                                elif "Product Type" in sub.columns:
+                                    prod_col = "Product Type"
+
+                                if prod_col is not None:
+                                    first_prod = str(first_row.get(prod_col, '')).strip()
+                                    if first_prod:
+                                        try:
+                                            sym = TICKER_OVERRIDES.get(first_prod.upper(), first_prod)
+                                            ticker = yf.Ticker(sym)
+                                            info = getattr(ticker, "fast_info", None)
+                                            price_val = None
+                                            if info is not None:
+                                                price_val = getattr(info, "last_price", None) or getattr(info, "lastClose", None)
+                                            if price_val is None:
+                                                hist = ticker.history(period="1d")
+                                                if not hist.empty and 'Close' in hist.columns:
+                                                    price_val = float(hist['Close'].iloc[-1])
+                                            if price_val is not None:
+                                                first_price = round(float(price_val), 4)
+                                        except Exception:
+                                            first_price = None
+
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            first_date_txt = first_date if first_date is not None and first_date != "NaT" else "-"
+            first_prod_txt = first_prod if first_prod else "-"
+            price_txt = f"${first_price:,.4f}" if first_price is not None else "-"
+            st.markdown(
+                f"<div>First Purchase Product: <strong>{first_prod_txt}</strong></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div>First Purchase Date: <strong>{first_date_txt}</strong></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div>Live Price ({first_prod_txt}): <strong>{price_txt}</strong></div>",
                 unsafe_allow_html=True,
             )
 

@@ -31,7 +31,6 @@ def _call_gemini(prompt: str, timeout: float = 12.0) -> str | None:
             generation_config={
                 "temperature": 0.4,
                 "top_p": 0.9,
-                "max_output_tokens": 768,
             },
         )
         text = getattr(resp, "text", "")
@@ -166,7 +165,9 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
     parts.append(
         "\n\nInstructions for your answer (very important):\n"
         "You must produce TWO clearly separated sections, in this exact order, both based on the SAME underlying plan.\n"
-        "Section 1 is a concise bullet summary for the advisor. Section 2 is a client-facing narrative.\n"
+        "Section 1 is a concise bullet summary for the advisor. Section 2 is a client-facing narrative. You must always write "
+        "both sections completely: finish all required bullets in Section 1 and then write the full Section 2 paragraph. Do NOT "
+        "stop after only the first heading or first bullet.\n"
         "Do not invent extra facts in Section 1 that are not consistent with Section 2; Section 1 should be a structured "
         "summary of the same content you provide to the client.\n"
         "You must follow conservative, Singapore-style financial advisory practices: never guarantee returns or describe any "
@@ -238,13 +239,77 @@ def generate_client_plan(context: Dict[str, Any]) -> str:
     """
     try:
         prompt = _build_prompt(context or {})
-        # For client plans, rely only on the local model (Ollama/Qwen) to avoid Gemini safety stops.
+
+        # Primary: Gemini 2.5 Flash
+        text = _call_gemini(prompt)
+        if text:
+            cleaned = str(text).strip()
+            print("[client_plan_llm] generate_client_plan (Gemini) length:", len(cleaned))
+            print("[client_plan_llm] generate_client_plan (Gemini) preview:", repr(cleaned[:400]))
+            return cleaned
+
+        print("[client_plan_llm] Gemini unavailable or returned no text for client plan, falling back to local model (Ollama/Qwen).")
+
+        # Fallback: local model (Ollama/Qwen)
         text = _call_ollama(prompt)
-        if not text:
-            print("[client_plan_llm] Local model (Ollama) returned no text for client plan.")
-            return "Future plan is temporarily unavailable (local model call failed). Please try again later."
-        # Preserve the two-section structure; just strip leading/trailing whitespace.
-        return str(text).strip()
+        if text:
+            cleaned = str(text).strip()
+            print("[client_plan_llm] generate_client_plan (Ollama) length:", len(cleaned))
+            print("[client_plan_llm] generate_client_plan (Ollama) preview:", repr(cleaned[:400]))
+            return cleaned
+
+        print("[client_plan_llm] Both Gemini and local model (Ollama) returned no text for client plan.")
+        return "Future plan is temporarily unavailable (both primary and fallback models failed). Please try again later."
     except Exception as e:
         print("[client_plan_llm] Unexpected error in generate_client_plan:", repr(e))
         return "Future plan is temporarily unavailable (unexpected error). Please try again later."
+
+
+def _build_market_outlook_prompt(profile_text: str, outlook_text: str) -> str:
+    """Build a prompt to rewrite a market outlook using a given writing profile."""
+    profile = (profile_text or "").strip()
+    outlook = (outlook_text or "").strip()
+
+    parts: List[str] = []
+    parts.append(
+        "You are an expert financial writer helping a relationship manager prepare a concise market outlook note for clients. "
+        "You will be given (1) a writing style profile and (2) a raw market outlook draft. Your task is to rewrite the outlook "
+        "so that it faithfully preserves the key views, asset class messages and risk language, but follows the tone, style and "
+        "formatting rules in the writing profile. Do NOT greet the client, do NOT include any name placeholders such as '{Name}', "
+        "and do NOT add meta text such as 'Here is the rewritten outlook'."
+    )
+
+    parts.append("\n\nWRITING STYLE PROFILE (GUIDELINES):\n" + profile + "\n")
+    parts.append("RAW MARKET OUTLOOK (SOURCE TEXT):\n" + outlook + "\n")
+    return "\n\n".join(parts)
+
+
+def generate_market_outlook(profile_text: str, outlook_text: str) -> str:
+    """Rewrite a market outlook using a given writing profile.
+
+    Uses Gemini 2.5 flash when available, falling back to a local Qwen/Ollama model.
+    Returns the rewritten outlook text, or a short fallback message on failure.
+    """
+    try:
+        if not (profile_text and outlook_text):
+            return "Market outlook is temporarily unavailable (missing profile or source text)."
+
+        prompt = _build_market_outlook_prompt(profile_text, outlook_text)
+
+        # Primary: Gemini 2.5 Flash
+        text = _call_gemini(prompt)
+        if text:
+            return str(text).strip()
+
+        print("[client_plan_llm] Gemini unavailable or returned no text for market outlook, falling back to local model (Ollama/Qwen).")
+
+        # Fallback: local model (Ollama/Qwen)
+        text = _call_ollama(prompt)
+        if text:
+            return str(text).strip()
+
+        print("[client_plan_llm] Both Gemini and local model (Ollama) returned no text for market outlook.")
+        return "Market outlook is temporarily unavailable (both primary and fallback models failed). Please try again later."
+    except Exception as e:
+        print("[client_plan_llm] Unexpected error in generate_market_outlook:", repr(e))
+        return "Market outlook is temporarily unavailable (unexpected error). Please try again later."

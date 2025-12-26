@@ -8,7 +8,7 @@ import numpy as np
 import yfinance as yf
 from llm_parser import parse_instructions
 from rules import apply_actions, commit_to_excel
-from client_plan_llm import generate_client_plan
+from client_plan_llm import generate_client_plan, generate_market_outlook
 
 TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
@@ -75,6 +75,18 @@ def load_transactions(path, mtime):
 
 
 @st.cache_data(show_spinner=False)
+def load_text_file(path: str):
+    """Load a text file safely, returning an empty string on failure."""
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
 def build_client_history(tdf: pd.DataFrame):
     """Build per-client transaction summary and product universe.
 
@@ -135,6 +147,12 @@ tx_path = "cleaned_data.xlsx"
 tx_mtime = os.path.getmtime(tx_path) if os.path.exists(tx_path) else 0
 tx_df = load_transactions(tx_path, tx_mtime)
 client_history_map, tx_product_universe = build_client_history(tx_df)
+
+# Market outlook inputs (temporary: from text files; later these can be sourced from a database)
+profile_path = "jonathan-writing-profile.txt"
+outlook_path = "marketoutlook-temporary.txt"
+_profile_text = load_text_file(profile_path)
+_outlook_text = load_text_file(outlook_path)
 # If overrides were applied previously, use them
 if "applied_df" in st.session_state and st.session_state.get("use_overrides", False):
     try:
@@ -386,55 +404,57 @@ if clicked_date:
                 unsafe_allow_html=True,
             )
 
-            # First purchase product and live price via yfinance
+            # Market outlook (LLM-rewritten using writing profile)
+            if "market_outlook_text" not in st.session_state:
+                if _profile_text and _outlook_text:
+                    with st.spinner("Generating market outlook..."):
+                        st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
+                else:
+                    st.session_state["market_outlook_text"] = "Market outlook is not available."
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            st.markdown("**Market outlook**")
+            st.markdown(st.session_state.get("market_outlook_text", "-"))
+
+            # First purchase product and (temporarily disabled) live price via yfinance
             first_prod = None
             first_date = None
             first_price = None
-            if tx_df is not None and not tx_df.empty:
-                col_client_id = "Client number"
-                if col_client_id in tx_df.columns:
-                    client_id_str = str(row.get('Client', '')).strip()
-                    sub = tx_df[tx_df[col_client_id].astype(str) == client_id_str].copy()
-                    if not sub.empty:
-                        date_cols = [c for c in sub.columns if 'date' in c.lower()]
-                        if date_cols:
-                            dcol = date_cols[0]
-                            sub[dcol] = pd.to_datetime(sub[dcol], errors='coerce')
-                            sub = sub[sub[dcol].notna()]
-                            if not sub.empty:
-                                sub = sub.sort_values(dcol)
-                                first_row = sub.iloc[0]
-                                first_date = first_row[dcol]
-                                if pd.notna(first_date):
-                                    try:
-                                        first_date = pd.to_datetime(first_date).date()
-                                    except Exception:
-                                        pass
-                                prod_col = None
-                                # Prefer 'Product Name' for display and ticker; fall back to 'Product Type' only if needed
-                                if "Product Name" in sub.columns:
-                                    prod_col = "Product Name"
-                                elif "Product Type" in sub.columns:
-                                    prod_col = "Product Type"
-
-                                if prod_col is not None:
-                                    first_prod = str(first_row.get(prod_col, '')).strip()
-                                    if first_prod:
+            try:
+                if tx_df is not None and not tx_df.empty:
+                    col_client_id = "Client number"
+                    if col_client_id in tx_df.columns:
+                        client_id_str = str(row.get('Client', '')).strip()
+                        sub = tx_df[tx_df[col_client_id].astype(str) == client_id_str].copy()
+                        if not sub.empty:
+                            date_cols = [c for c in sub.columns if 'date' in c.lower()]
+                            if date_cols:
+                                dcol = date_cols[0]
+                                sub[dcol] = pd.to_datetime(sub[dcol], errors='coerce')
+                                sub = sub[sub[dcol].notna()]
+                                if not sub.empty:
+                                    sub = sub.sort_values(dcol)
+                                    first_row = sub.iloc[0]
+                                    first_date = first_row[dcol]
+                                    if pd.notna(first_date):
                                         try:
-                                            sym = TICKER_OVERRIDES.get(first_prod.upper(), first_prod)
-                                            ticker = yf.Ticker(sym)
-                                            info = getattr(ticker, "fast_info", None)
-                                            price_val = None
-                                            if info is not None:
-                                                price_val = getattr(info, "last_price", None) or getattr(info, "lastClose", None)
-                                            if price_val is None:
-                                                hist = ticker.history(period="1d")
-                                                if not hist.empty and 'Close' in hist.columns:
-                                                    price_val = float(hist['Close'].iloc[-1])
-                                            if price_val is not None:
-                                                first_price = round(float(price_val), 4)
+                                            first_date = pd.to_datetime(first_date).date()
                                         except Exception:
-                                            first_price = None
+                                            pass
+                                    # Prefer 'Product Name' for display; fall back to 'Product Type' only if needed.
+                                    prod_col = None
+                                    if "Product Name" in sub.columns:
+                                        prod_col = "Product Name"
+                                    elif "Product Type" in sub.columns:
+                                        prod_col = "Product Type"
+
+                                    if prod_col is not None:
+                                        first_prod = str(first_row.get(prod_col, '')).strip()
+                                        # Live price lookup via yfinance is temporarily disabled to avoid external HTTP
+                                        # and to isolate LLM behaviour. first_price will remain None and display as '-'.
+            except Exception:
+                # If anything goes wrong in the lookup, we leave first_price as None and continue
+                first_price = None
 
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             first_date_txt = first_date if first_date is not None and first_date != "NaT" else "-"

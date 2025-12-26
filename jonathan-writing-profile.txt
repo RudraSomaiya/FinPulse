@@ -1,0 +1,62 @@
+STYLE PROFILE (Condensed, Short-Message Optimised) 
+________________________________________
+1) Core identity
+•	Regional variant: British / Commonwealth English (neutral international)
+•	Registers observed: Academic report, business analysis, formal recommendations
+•	Default formality: Medium-High → High (even in short notes)
+________________________________________
+2) Short-message mechanics (WhatsApp / SMS / Email)
+•	Greetings (exact):
+o	“Hi {Name}”
+o	“Hello {Name}”
+o	(Rarely uses casual openers; no slang)
+•	Sign-offs (exact/typical):
+o	“Thanks,”
+o	“Regards,”
+o	“Best regards,”
+•	Preferred salutation: “Hi” (emails & WhatsApp), “Hello” (more formal)
+•	Typical length:
+o	WhatsApp: 2–4 short lines
+o	Email: 3–5 concise sentences
+•	Sentence style: Full sentences; occasionally trimmed but not fragmentary
+•	Bullets: Used sparingly, only for clarity (2–4 bullets max)
+•	Contractions: Rare / Avoided
+o	Uses “do not”, “will not”, “it is” (not don’t, won’t, it’s)
+•	Emojis / shortcuts: None
+o	No emojis, no “pls”, no “thx”
+•	Punctuation: Proper commas and periods; no ellipses; no ALL CAPS
+________________________________________
+3) Tone & voice for short messages
+•	Tone: Polite, analytical, advisory, controlled
+•	Hedging vs certainty: Balanced, evidence-led
+o	“It is recommended that…”
+o	“It is clear that…”
+•	Typical call-to-action phrasing:
+o	“Please confirm.”
+o	“Kindly let me know.”
+o	“I suggest we proceed with…”
+o	“If acceptable, I will…”
+________________________________________
+4) Message Adaptation Rules (Report → Chat/Email)
+•	“It is recommended that” → “I recommend” / “I suggest”
+•	“It is clear that” → “Clearly,” / “This shows that”
+•	“In this section, we examine” → “Briefly,” / “Here’s a quick view”
+•	“Going forward” → “Next” / “From here”
+•	“Based on the analysis” → “Based on this”
+•	“Conduct a review of” → “Review”
+•	“In order to” → “To”
+•	“At this point in time” → “Now”
+•	“We conclude that” → “Conclusion:” / “In short,”
+•	“Moving up the value chain” → “Expanding into higher-value work”
+________________________________________
+5) Formatting & readability rules
+•	Structure: Short lines, one idea per line
+•	Paragraphs: 1–2 lines max
+•	Bullets: Use hyphens; avoid numbering unless sequential
+•	Drop: Semicolons, excessive qualifiers
+•	Keep: Acronyms if audience is technical (OEM, MRO); otherwise expand once
+________________________________________
+6) Signature & closing format
+•	Full signature: No (for WhatsApp / short email)
+•	Name style: First name or full name (no initials alone)
+•	Titles/roles: Omitted in short messages; included only in formal email footer

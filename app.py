@@ -1,13 +1,24 @@
+import os
+
 import pandas as pd
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from streamlit_calendar import calendar
 import numpy as np
+import yfinance as yf
+from llm_parser import parse_instructions
+from rules import apply_actions, commit_to_excel
+from client_plan_llm import generate_client_plan, generate_market_outlook
+
+TICKER_OVERRIDES = {
+    "TENCENT": "0700.HK",
+}
 
 st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 
 @st.cache_data(show_spinner=False)
-def load_recos(path):
+def load_recos(path, mtime):
+    """Load recommendations with cache keyed by file path and modification time."""
     df = pd.read_excel(path)
     # Map common alternative names
     if "Cluster" not in df.columns and "Cluster_Name" in df.columns:
@@ -50,6 +61,76 @@ def load_recos(path):
     df = df.rename(columns=rename_map)
     return df
 
+
+@st.cache_data(show_spinner=False)
+def load_transactions(path, mtime):
+    """Load cleaned transaction history (cleaned_data.xlsx)."""
+    if not os.path.exists(path) or not mtime:
+        return pd.DataFrame()
+    try:
+        tdf = pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
+    return tdf
+
+
+@st.cache_data(show_spinner=False)
+def load_text_file(path: str):
+    """Load a text file safely, returning an empty string on failure."""
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
+def build_client_history(tdf: pd.DataFrame):
+    """Build per-client transaction summary and product universe.
+
+    Groups by 'Client number' and collects product types and amounts.
+    Returns (history_map, product_universe).
+    """
+    if tdf is None or tdf.empty:
+        return {}, []
+
+    col_client_id = "Client number"
+    col_prod = "Product Type"
+    col_amt = "Transaction Amount (SGD)"
+
+    if col_client_id not in tdf.columns:
+        return {}, []
+
+    history = {}
+    product_universe = set()
+
+    for cid, g in tdf.groupby(col_client_id):
+        g = g.copy()
+        tx_list = []
+        if col_prod in g.columns:
+            product_universe.update(
+                {str(x).strip() for x in g[col_prod].dropna().astype(str).tolist()}
+            )
+        for _, r in g.iterrows():
+            prod = str(r.get(col_prod, "")).strip() if col_prod in g.columns else ""
+            amt = r.get(col_amt, None) if col_amt in g.columns else None
+            tx_list.append({"product": prod, "amount": amt})
+        avg_amt = None
+        if col_amt in g.columns and not g[col_amt].isna().all():
+            try:
+                avg_amt = float(g[col_amt].mean())
+            except Exception:
+                avg_amt = None
+        history[str(cid)] = {
+            "transactions": tx_list,
+            "avg_amount": avg_amt,
+            "total_tx": int(len(g)),
+        }
+
+    return history, sorted({p for p in product_universe if p})
+
 # No transactions file reference needed
 
 cluster_colors = {
@@ -58,8 +139,27 @@ cluster_colors = {
     "Ultra High-Net-Worth": "#2ca02c",
     "New/Single-Transaction": "#7f7f7f",
 }
+rec_path = "recommendationOutput.xlsx"
+rec_mtime = os.path.getmtime(rec_path) if os.path.exists(rec_path) else 0
+df = load_recos(rec_path, rec_mtime)
 
-df = load_recos("recommendationOutput.xlsx")
+tx_path = "cleaned_data.xlsx"
+tx_mtime = os.path.getmtime(tx_path) if os.path.exists(tx_path) else 0
+tx_df = load_transactions(tx_path, tx_mtime)
+client_history_map, tx_product_universe = build_client_history(tx_df)
+
+# Market outlook inputs (temporary: from text files; later these can be sourced from a database)
+profile_path = "jonathan-writing-profile.txt"
+outlook_path = "marketoutlook-temporary.txt"
+_profile_text = load_text_file(profile_path)
+_outlook_text = load_text_file(outlook_path)
+# If overrides were applied previously, use them
+if "applied_df" in st.session_state and st.session_state.get("use_overrides", False):
+    try:
+        if isinstance(st.session_state["applied_df"], pd.DataFrame) and len(st.session_state["applied_df"]) > 0:
+            df = st.session_state["applied_df"].copy()
+    except Exception:
+        pass
 if "Recent_Product" not in df.columns:
     df["Recent_Product"] = np.nan
 if "Recent_Date" not in df.columns:
@@ -67,6 +167,22 @@ if "Recent_Date" not in df.columns:
 
 if "EventDate" not in df.columns:
     df["EventDate"] = pd.NaT
+
+static_product_types = ["BONDS", "STOCK", "UT", "DPMS", "ETF"]
+reco_products = set()
+if "Recommended_ProductType" in df.columns:
+    reco_products.update(
+        {str(x).strip() for x in df["Recommended_ProductType"].dropna().astype(str).tolist()}
+    )
+if "Current_ProductType" in df.columns:
+    reco_products.update(
+        {str(x).strip() for x in df["Current_ProductType"].dropna().astype(str).tolist()}
+    )
+available_product_types = sorted(
+    {p for p in static_product_types} |
+    {p for p in tx_product_universe} |
+    {p for p in reco_products if p}
+)
 
 min_date = pd.to_datetime(df["EventDate"].min()) if df["EventDate"].notna().any() else None
 max_date = pd.to_datetime(df["EventDate"].max()) if df["EventDate"].notna().any() else None
@@ -77,6 +193,44 @@ st.caption(
     f"Clusters: {len([c for c in df['Cluster'].dropna().unique().tolist()])} | "
     f"Date range: {min_date.date() if min_date is not None else '-'} to {max_date.date() if max_date is not None else '-'}"
 )
+
+st.sidebar.markdown("### Natural language overrides")
+nl_text = st.sidebar.text_area("Type instructions", height=100)
+col_parse, col_apply = st.sidebar.columns(2)
+if col_parse.button("Parse"):
+    actions = parse_instructions(nl_text)
+    st.session_state["actions"] = actions
+    st.session_state["summary"] = {}
+    if not actions or not actions.get("rules"):
+        st.sidebar.warning("No valid rules parsed.")
+    else:
+        st.sidebar.success(f"Parsed {len(actions.get('rules', []))} rule(s).")
+if col_apply.button("Apply"):
+    actions = st.session_state.get("actions", {})
+    if not actions or not actions.get("rules"):
+        st.sidebar.warning("Nothing to apply. Parse instructions first.")
+    else:
+        new_df, summary = apply_actions(df, actions, date.today())
+        st.session_state["applied_df"] = new_df
+        st.session_state["summary"] = summary
+        st.session_state["use_overrides"] = True
+        st.rerun()
+
+summary = st.session_state.get("summary", {})
+if summary:
+    st.sidebar.caption(f"Changes — Removed: {summary.get('removed',0)}, Modified: {summary.get('modified',0)}, Added: {summary.get('added',0)}")
+    if st.sidebar.button("Commit to Excel"):
+        try:
+            applied = st.session_state.get("applied_df")
+            if isinstance(applied, pd.DataFrame) and len(applied) > 0:
+                backup_path = commit_to_excel(applied, "recommendationOutput.xlsx")
+                st.sidebar.success(f"Saved. Backup: {backup_path if backup_path else 'none'}")
+                st.session_state["use_overrides"] = False
+                st.rerun()
+            else:
+                st.sidebar.warning("No applied data to save.")
+        except Exception as e:
+            st.sidebar.error(f"Save failed: {e}")
 
 st.sidebar.markdown("### Filters")
 start_date, end_date = st.sidebar.date_input(
@@ -249,6 +403,145 @@ if clicked_date:
                 f"<div style='font-weight:700; color:{top_color};'>Top 10% Buyer: {top_text}</div>",
                 unsafe_allow_html=True,
             )
+
+            # First purchase product and live price via yfinance
+            first_prod = None
+            first_date = None
+            first_price = None
+            try:
+                if tx_df is not None and not tx_df.empty:
+                    col_client_id = "Client number"
+                    if col_client_id in tx_df.columns:
+                        client_id_str = str(row.get('Client', '')).strip()
+                        sub = tx_df[tx_df[col_client_id].astype(str) == client_id_str].copy()
+                        if not sub.empty:
+                            date_cols = [c for c in sub.columns if 'date' in c.lower()]
+                            if date_cols:
+                                dcol = date_cols[0]
+                                sub[dcol] = pd.to_datetime(sub[dcol], errors='coerce')
+                                sub = sub[sub[dcol].notna()]
+                                if not sub.empty:
+                                    sub = sub.sort_values(dcol)
+                                    first_row = sub.iloc[0]
+                                    first_date = first_row[dcol]
+                                    if pd.notna(first_date):
+                                        try:
+                                            first_date = pd.to_datetime(first_date).date()
+                                        except Exception:
+                                            pass
+                                    # Prefer 'Product Name' for display and ticker; fall back to 'Product Type' only if needed.
+                                    prod_col = None
+                                    if "Product Name" in sub.columns:
+                                        prod_col = "Product Name"
+                                    elif "Product Type" in sub.columns:
+                                        prod_col = "Product Type"
+
+                                    if prod_col is not None:
+                                        first_prod = str(first_row.get(prod_col, '')).strip()
+                                        if first_prod:
+                                            try:
+                                                # Map to a Yahoo Finance symbol only when we have a clear mapping or a simple code.
+                                                raw = first_prod.upper().strip()
+                                                sym = TICKER_OVERRIDES.get(raw)
+                                                # As a simple heuristic, treat short, no-space strings as potential tickers.
+                                                if sym is None and " " not in raw and len(raw) <= 10:
+                                                    sym = raw
+
+                                                if sym is not None:
+                                                    ticker = yf.Ticker(sym)
+                                                    info = getattr(ticker, "fast_info", None)
+                                                    price_val = None
+                                                    if info is not None:
+                                                        price_val = getattr(info, "last_price", None) or getattr(info, "lastClose", None)
+                                                    if price_val is None:
+                                                        hist = ticker.history(period="1d")
+                                                        if not hist.empty and 'Close' in hist.columns:
+                                                            price_val = float(hist['Close'].iloc[-1])
+                                                    if price_val is not None:
+                                                        first_price = round(float(price_val), 4)
+                                            except Exception:
+                                                first_price = None
+            except Exception:
+                # If anything goes wrong in the lookup, we leave first_price as None and continue
+                first_price = None
+
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            first_date_txt = first_date if first_date is not None and first_date != "NaT" else "-"
+            first_prod_txt = first_prod if first_prod else "-"
+            price_txt = f"${first_price:,.4f}" if first_price is not None else "-"
+            st.markdown(
+                f"<div>First Purchase Product: <strong>{first_prod_txt}</strong></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div>First Purchase Date: <strong>{first_date_txt}</strong></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<div>Live Price ({first_prod_txt}): <strong>{price_txt}</strong></div>",
+                unsafe_allow_html=True,
+            )
+
+            # Market outlook (LLM-rewritten using writing profile)
+            if "market_outlook_text" not in st.session_state:
+                if _profile_text and _outlook_text:
+                    with st.spinner("Generating market outlook..."):
+                        st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
+                else:
+                    st.session_state["market_outlook_text"] = "Market outlook is not available."
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            st.markdown("**Market outlook**")
+            st.markdown(st.session_state.get("market_outlook_text", "-"))
+
+            # AI-generated future plan paragraph
+            client_id = str(row.get('Client', '')).strip()
+            hist = client_history_map.get(client_id, {})
+            tx_list = hist.get("transactions", [])
+
+            avg_hist = row.get('Avg_Historical_Amount', np.nan)
+            if (isinstance(avg_hist, float) and np.isnan(avg_hist)) or avg_hist is None:
+                avg_hist = hist.get("avg_amount")
+
+            total_tx = row.get('Total_Transactions', np.nan)
+            if (isinstance(total_tx, float) and np.isnan(total_tx)) or total_tx is None:
+                total_tx = hist.get("total_tx")
+
+            rec_ptype = row.get('Recommended_ProductType', '')
+            pred_amt = row.get('Predicted_Amount_SGD', row.get('Recommended_Amount_P50', np.nan))
+            conf_val = row.get('Confidence', None)
+
+            first_investment_date = row.get('First_Investment_Date', None)
+            total_invested_sgd = row.get('Total_Invested_SGD', None)
+
+            plan_context = {
+                "client_name": client,
+                "cluster": cluster,
+                "transactions": tx_list,
+                "recommended_product_type": rec_ptype,
+                "confidence": conf_val,
+                "predicted_amount_sgd": pred_amt,
+                "avg_historical_amount": avg_hist,
+                "total_transactions": total_tx,
+                "first_investment_date": first_investment_date,
+                "total_invested_sgd": total_invested_sgd,
+                "available_product_types": available_product_types,
+                "simple_language": not is_top,
+            }
+
+            if "client_plan_cache" not in st.session_state:
+                st.session_state["client_plan_cache"] = {}
+            cache = st.session_state["client_plan_cache"]
+            cache_key = client_id or client
+            plan_text = cache.get(cache_key)
+            if not plan_text:
+                with st.spinner("Generating future plan..."):
+                    plan_text = generate_client_plan(plan_context)
+                cache[cache_key] = plan_text
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            st.markdown("**Future Plan (AI Advisor)**")
+            st.markdown(plan_text)
         with col2:
             if st.button("Prev", key=f"prev-{clicked_date}"):
                 st.session_state[idx_state_key] = (i - 1) % len(day_df)

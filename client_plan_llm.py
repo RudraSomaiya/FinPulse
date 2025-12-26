@@ -15,7 +15,7 @@ load_dotenv()
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 
@@ -169,6 +169,11 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
         "Section 1 is a concise bullet summary for the advisor. Section 2 is a client-facing narrative.\n"
         "Do not invent extra facts in Section 1 that are not consistent with Section 2; Section 1 should be a structured "
         "summary of the same content you provide to the client.\n"
+        "You must follow conservative, Singapore-style financial advisory practices: never guarantee returns or describe any "
+        "investment as risk-free; always balance potential benefits with key risks; do not give tax or legal advice; do not "
+        "quote specific performance targets or promise that goals will be achieved by a certain date.\n"
+        "Only recommend product types that are explicitly listed in the provided universe of available product types. Do not "
+        "invent new product types or name individual securities that are not clearly implied by that universe.\n"
         "Do NOT output the literal phrases 'SECTION 1 FORMAT' or 'SECTION 2 FORMAT' anywhere.\n\n"
         "------------------------------\n"
         "SECTION 1 (advisor summary) – OUTPUT REQUIREMENTS:\n"
@@ -216,19 +221,19 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
         "cluster) and exploratory products. When you are confident, you may suggest approximate percentage ranges; if not, "
         "use qualitative wording such as 'most of your portfolio' versus 'a smaller portion'.\n"
         "- Always mention both potential upside (e.g., yield or diversification) and downside or risks (e.g., volatility).\n"
-        "- End with a simple closing like 'Thank you.' but DO NOT add any signature or placeholder such as '[YOUR NAME]' or "
-        "'[Advisor]'.\n"
+        "- End with a simple closing like 'Thank you.' and include a short disclaimer sentence such as 'This is a general "
+        "discussion only and does not take into account your specific objectives, financial situation or needs.' Do NOT add "
+        "any signature or placeholder such as '[YOUR NAME]' or '[Advisor]'.\n"
         "- Use plain, conversational language that a banker could read directly to the client.\n"
         "Do not add any extra commentary outside these two sections, and do not include any placeholder text in square brackets."
     )
 
     return "\n".join(parts)
 
-
 def generate_client_plan(context: Dict[str, Any]) -> str:
     """Generate a future investment plan paragraph for a client.
 
-    Uses Gemini 2.5 Pro when available, falling back to a local Qwen/Ollama model.
+    Uses Gemini 2.5 flash when available, falling back to a local Qwen/Ollama model.
     Returns a single paragraph of plain text. On failure, returns a short fallback message.
     """
     try:

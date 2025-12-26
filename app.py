@@ -404,19 +404,7 @@ if clicked_date:
                 unsafe_allow_html=True,
             )
 
-            # Market outlook (LLM-rewritten using writing profile)
-            if "market_outlook_text" not in st.session_state:
-                if _profile_text and _outlook_text:
-                    with st.spinner("Generating market outlook..."):
-                        st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
-                else:
-                    st.session_state["market_outlook_text"] = "Market outlook is not available."
-
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            st.markdown("**Market outlook**")
-            st.markdown(st.session_state.get("market_outlook_text", "-"))
-
-            # First purchase product and (temporarily disabled) live price via yfinance
+            # First purchase product and live price via yfinance
             first_prod = None
             first_date = None
             first_price = None
@@ -441,7 +429,7 @@ if clicked_date:
                                             first_date = pd.to_datetime(first_date).date()
                                         except Exception:
                                             pass
-                                    # Prefer 'Product Name' for display; fall back to 'Product Type' only if needed.
+                                    # Prefer 'Product Name' for display and ticker; fall back to 'Product Type' only if needed.
                                     prod_col = None
                                     if "Product Name" in sub.columns:
                                         prod_col = "Product Name"
@@ -450,8 +438,29 @@ if clicked_date:
 
                                     if prod_col is not None:
                                         first_prod = str(first_row.get(prod_col, '')).strip()
-                                        # Live price lookup via yfinance is temporarily disabled to avoid external HTTP
-                                        # and to isolate LLM behaviour. first_price will remain None and display as '-'.
+                                        if first_prod:
+                                            try:
+                                                # Map to a Yahoo Finance symbol only when we have a clear mapping or a simple code.
+                                                raw = first_prod.upper().strip()
+                                                sym = TICKER_OVERRIDES.get(raw)
+                                                # As a simple heuristic, treat short, no-space strings as potential tickers.
+                                                if sym is None and " " not in raw and len(raw) <= 10:
+                                                    sym = raw
+
+                                                if sym is not None:
+                                                    ticker = yf.Ticker(sym)
+                                                    info = getattr(ticker, "fast_info", None)
+                                                    price_val = None
+                                                    if info is not None:
+                                                        price_val = getattr(info, "last_price", None) or getattr(info, "lastClose", None)
+                                                    if price_val is None:
+                                                        hist = ticker.history(period="1d")
+                                                        if not hist.empty and 'Close' in hist.columns:
+                                                            price_val = float(hist['Close'].iloc[-1])
+                                                    if price_val is not None:
+                                                        first_price = round(float(price_val), 4)
+                                            except Exception:
+                                                first_price = None
             except Exception:
                 # If anything goes wrong in the lookup, we leave first_price as None and continue
                 first_price = None
@@ -472,6 +481,18 @@ if clicked_date:
                 f"<div>Live Price ({first_prod_txt}): <strong>{price_txt}</strong></div>",
                 unsafe_allow_html=True,
             )
+
+            # Market outlook (LLM-rewritten using writing profile)
+            if "market_outlook_text" not in st.session_state:
+                if _profile_text and _outlook_text:
+                    with st.spinner("Generating market outlook..."):
+                        st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
+                else:
+                    st.session_state["market_outlook_text"] = "Market outlook is not available."
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            st.markdown("**Market outlook**")
+            st.markdown(st.session_state.get("market_outlook_text", "-"))
 
             # AI-generated future plan paragraph
             client_id = str(row.get('Client', '')).strip()
@@ -505,6 +526,7 @@ if clicked_date:
                 "first_investment_date": first_investment_date,
                 "total_invested_sgd": total_invested_sgd,
                 "available_product_types": available_product_types,
+                "simple_language": not is_top,
             }
 
             if "client_plan_cache" not in st.session_state:

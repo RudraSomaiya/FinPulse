@@ -98,6 +98,7 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
     total_invested = ctx.get("total_invested_sgd")
     transactions: List[Dict[str, Any]] = ctx.get("transactions", []) or []
     products: List[str] = ctx.get("available_product_types", []) or []
+    simple_language = bool(ctx.get("simple_language", False))
 
     parts: List[str] = []
 
@@ -225,7 +226,11 @@ def _build_prompt(ctx: Dict[str, Any]) -> str:
         "- End with a simple closing like 'Thank you.' and include a short disclaimer sentence such as 'This is a general "
         "discussion only and does not take into account your specific objectives, financial situation or needs.' Do NOT add "
         "any signature or placeholder such as '[YOUR NAME]' or '[Advisor]'.\n"
-        "- Use plain, conversational language that a banker could read directly to the client.\n"
+        "- Use plain, conversational language that a banker could read directly to the client."
+        + (" When the client is not a top 10% buyer, you must explain concepts in very simple, non-technical words so that someone "
+           "with no background in markets, trading or investing can understand. Avoid jargon and replace it with everyday "
+           "phrases (for example, say 'big ups and downs in prices' instead of 'volatility')." if simple_language else "")
+        + "\n"
         "Do not add any extra commentary outside these two sections, and do not include any placeholder text in square brackets."
     )
 

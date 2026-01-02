@@ -2,7 +2,10 @@ import os
 import json
 from typing import Any, Dict, List
 
-import requests
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover - optional dependency for Ollama fallback
+    requests = None  # type: ignore[assignment]
 from dotenv import load_dotenv
 
 try:
@@ -54,6 +57,10 @@ def _call_gemini(prompt: str, timeout: float = 12.0) -> str | None:
 
 
 def _call_ollama(prompt: str, timeout: float = 16.0) -> str | None:
+    # If requests is not available, we cannot call Ollama; treat as unavailable.
+    if requests is None:
+        print("[client_plan_llm] requests not installed; skipping Ollama fallback.")
+        return None
     try:
         url = f"{DEFAULT_OLLAMA_URL}/api/generate"
         req = {
@@ -82,6 +89,7 @@ def _call_ollama(prompt: str, timeout: float = 16.0) -> str | None:
             print("[client_plan_llm] Ollama call returned empty text.")
         return text or None
     except Exception as e:
+        # Any network / parsing error just disables the Ollama path; callers handle None.
         print("[client_plan_llm] Ollama error:", repr(e))
         return None
 

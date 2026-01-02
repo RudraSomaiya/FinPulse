@@ -3,7 +3,10 @@ import json
 import time
 from typing import Any, Dict
 
-import requests
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover - optional dependency for Ollama fallback
+    requests = None  # type: ignore[assignment]
 from dotenv import load_dotenv
 
 # Primary: Gemini 2.5 Flash via google-generativeai, optional; fall back to Ollama qwen2.5:7b-instruct
@@ -113,6 +116,9 @@ def _gemini_call(prompt: str, timeout: float = 8.0) -> Dict[str, Any] | None:
 
 
 def _ollama_call(prompt: str, timeout: float = 12.0) -> Dict[str, Any] | None:
+    # If requests is not available, we cannot call Ollama; treat as unavailable.
+    if requests is None:
+        return None
     try:
         url = f"{DEFAULT_OLLAMA_URL}/api/generate"
         req = {

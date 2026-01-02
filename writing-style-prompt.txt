@@ -1,0 +1,49 @@
+You are a linguistic analyst and writing-style profiler. 
+Task: analyze the following text(s) written by a single individual and produce a condensed STYLE PROFILE optimized for generating short messages (WhatsApp/SMS), emails, and short notes. The source material may include reports, emails, and other long-form text. Focus ONLY on style (not on factual content). Preserve regional English features (e.g., Indian English), and do NOT infer private traits beyond what's visible.
+
+ANALYZE THESE DIMENSIONS (produce precise, actionable outputs for each):
+
+1) Core identity
+- Regional variant (e.g., Indian English)
+- Register(s) observed (report, email, chat)
+- Default formality level (High / Medium-High / Medium / Low)
+
+2) Short-message mechanics (for WhatsApp/SMS/email)
+- Typical greeting(s) and sign-offs (exact phrases)
+- Preferred salutations (Hi, Hello, Dear, none)
+- Typical message length (characters / sentences / bullets)
+- Sentence style in short messages (full sentences / sentence fragments / bullets)
+- Use of contractions (Yes/No — examples)
+- Use of emojis, punctuation shortcuts, ellipses, ALL CAPS, etc.
+
+3) Tone & voice for short messages
+- Tone: (polite, assertive, advisory, neutral, friendly, curt)
+- Degree of hedging vs certainty (e.g., “I suggest” vs “You should”)
+- Typical call-to-action phrasing (e.g., “Please confirm”, “Let me know”, “If OK, I’ll…”)
+
+4) Lexical & phrase conversions (map common report phrases → chat/email equivalents)
+- Up to 10 mappings, e.g.:
+  - “It is recommended that” → “I suggest” / “Recommend”
+  - “Concurrenty, and in a measured manner,” → “Also, in a measured way,”
+
+5) Formatting & readability rules
+- Line breaks vs paragraphs (use short lines / one-line paragraphs / bullet lists)
+- Formal punctuation to drop in messages (e.g., drop semicolons; keep commas)
+- Whether to include acronyms or expand them in messages
+
+6) Signature & closing format
+- Full-signature? (Yes/No). If short, how is name displayed? (initials, first name, full name)
+- Use of titles or role in signature (Yes/No — exact style)
+
+OUTPUT RULES:
+- Return a single structured STYLE PROFILE using bullet points and short lines.
+- Include a “Message Adaptation Rules” section with the lexical mappings.
+- Keep it concise (max ~300–400 words).
+- Do NOT include commentary or content summary.
+
+Now analyze the text below and produce the STYLE PROFILE.
+
+=====================
+TEXT TO ANALYSE
+=====================
+I have uploaded the document 

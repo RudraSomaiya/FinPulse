@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pandas as pd
 import streamlit as st
@@ -87,6 +88,105 @@ def load_text_file(path: str):
 
 
 @st.cache_data(show_spinner=False)
+def load_reminders(path: str, mtime: float):
+    if not os.path.exists(path) or not mtime:
+        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content"])
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        return df
+    try:
+        df = pd.read_excel(path)
+    except Exception:
+        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content"])
+    for col in ["ReminderId", "Date", "Subject", "Content"]:
+        if col not in df.columns:
+            if col == "Date":
+                df[col] = pd.NaT
+            else:
+                df[col] = ""
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    return df
+
+
+def commit_reminders_to_excel(df: pd.DataFrame, path: str) -> str:
+    backup_path = ""
+    try:
+        if os.path.exists(path):
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            root, ext = os.path.splitext(path)
+            backup_path = f"{root}.backup_{ts}{ext}"
+            shutil.copy2(path, backup_path)
+        df_to_write = df.copy()
+        df_to_write["Date"] = pd.to_datetime(df_to_write["Date"], errors="coerce")
+        df_to_write.to_excel(path, index=False)
+    except Exception as e:
+        raise e
+    return backup_path
+
+
+def apply_reminder_rules(df: pd.DataFrame, rules: list[dict]) -> tuple[pd.DataFrame, dict[str, int]]:
+    df = df.copy()
+    added = 0
+    removed = 0
+    for rule in rules:
+        rtype = str(rule.get("type", "")).strip().lower()
+        if rtype == "set_reminder":
+            date_val = rule.get("date")
+            subject = str(rule.get("subject", "")).strip()
+            content = str(rule.get("content", "")).strip()
+            if not date_val or not subject:
+                continue
+            target_ts = pd.to_datetime(date_val, errors="coerce")
+            if pd.isna(target_ts):
+                continue
+            if "ReminderId" not in df.columns:
+                df["ReminderId"] = ""
+            rid = f"R-{int(datetime.now().timestamp()*1000)}-{len(df) + added + 1}"
+            new_row = {
+                "ReminderId": rid,
+                "Date": target_ts,
+                "Subject": subject,
+                "Content": content,
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            added += 1
+        elif rtype == "remove_reminder":
+            date_val = rule.get("date")
+            subject = str(rule.get("subject", "")).strip().lower()
+            if not date_val or not subject:
+                continue
+            target_ts = pd.to_datetime(date_val, errors="coerce")
+            if pd.isna(target_ts):
+                continue
+            base = df.copy()
+            base["Date"] = pd.to_datetime(base["Date"], errors="coerce")
+            candidates = base[base["Date"].dt.date == target_ts.date()]
+            if candidates.empty:
+                continue
+            best_idx = None
+            best_score = 0.0
+            for idx, row in candidates.iterrows():
+                subj = str(row.get("Subject", "")).lower()
+                content = str(row.get("Content", "")).lower()
+                score = 0.0
+                if subject in subj:
+                    score += 2.0
+                if subject in content:
+                    score += 1.0
+                if score == 0.0:
+                    for token in subject.split():
+                        token = token.strip()
+                        if token and (token in subj or token in content):
+                            score += 0.1
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx is not None:
+                df = df.drop(index=best_idx).reset_index(drop=True)
+                removed += 1
+    return df, {"reminders_added": added, "reminders_removed": removed}
+
+
+@st.cache_data(show_spinner=False)
 def build_client_history(tdf: pd.DataFrame):
     """Build per-client transaction summary and product universe.
 
@@ -142,6 +242,10 @@ cluster_colors = {
 rec_path = "recommendationOutput.xlsx"
 rec_mtime = os.path.getmtime(rec_path) if os.path.exists(rec_path) else 0
 df = load_recos(rec_path, rec_mtime)
+
+rem_path = "reminders.xlsx"
+rem_mtime = os.path.getmtime(rem_path) if os.path.exists(rem_path) else 0
+reminders_df = load_reminders(rem_path, rem_mtime)
 
 tx_path = "cleaned_data.xlsx"
 tx_mtime = os.path.getmtime(tx_path) if os.path.exists(tx_path) else 0
@@ -210,10 +314,39 @@ if col_apply.button("Apply"):
     if not actions or not actions.get("rules"):
         st.sidebar.warning("Nothing to apply. Parse instructions first.")
     else:
-        new_df, summary = apply_actions(df, actions, date.today())
-        st.session_state["applied_df"] = new_df
+        rules = actions.get("rules", [])
+        rec_rule_types = {
+            "suppress_client",
+            "amount_multiplier",
+            "amount_set",
+            "change_recommendation",
+            "seasonality_inject",
+            "change_frequency",
+            "add_entry",
+            "add_recurring",
+            "delete_where",
+            "remove_entry",
+        }
+        rec_rules = [r for r in rules if str(r.get("type", "")).strip().lower() in rec_rule_types]
+        reminder_rules = [r for r in rules if str(r.get("type", "")).strip().lower() in {"set_reminder", "remove_reminder"}]
+
+        new_df = df
+        summary = {"removed": 0, "modified": 0, "added": 0}
+        if rec_rules:
+            new_df, summary = apply_actions(df, {"rules": rec_rules}, date.today())
+            st.session_state["applied_df"] = new_df
+            st.session_state["use_overrides"] = True
+
+        # Apply reminder rules and auto-save to reminders.xlsx
+        if reminder_rules:
+            current_rem_df = st.session_state.get("reminders_df", reminders_df)
+            new_rem_df, rem_summary = apply_reminder_rules(current_rem_df, reminder_rules)
+            commit_reminders_to_excel(new_rem_df, rem_path)
+            st.session_state["reminders_df"] = new_rem_df
+            # Merge reminder summary into main summary dict for display if needed
+            summary.update(rem_summary)
+
         st.session_state["summary"] = summary
-        st.session_state["use_overrides"] = True
         st.rerun()
 
 summary = st.session_state.get("summary", {})
@@ -262,6 +395,16 @@ if client_q:
 
 fdf = df[mask].copy()
 
+# Filter reminders into the same date window
+current_reminders_df = st.session_state.get("reminders_df", reminders_df)
+if not current_reminders_df.empty:
+    current_reminders_df = current_reminders_df.copy()
+    current_reminders_df["Date"] = pd.to_datetime(current_reminders_df["Date"], errors="coerce")
+    rem_mask = current_reminders_df["Date"].between(pd.to_datetime(start_date), pd.to_datetime(end_date))
+    rem_fdf = current_reminders_df[rem_mask].copy()
+else:
+    rem_fdf = current_reminders_df
+
 # Determine focus date for calendar if an exact client is searched
 focus_date_str = None
 if client_q and not fdf.empty:
@@ -287,6 +430,24 @@ for (d, cn), g in by_date_cluster:
         "color": cluster_colors.get(cn, "#999999"),
         "extendedProps": {"date": start_str, "cluster": str(cn)}
     })
+
+# Reminder events (red) grouped by date
+if not rem_fdf.empty:
+    rem_dates = rem_fdf["Date"].dt.date.dropna().tolist()
+    unique_dates = sorted({d for d in rem_dates})
+    for d in unique_dates:
+        day_rows = rem_fdf[rem_fdf["Date"].dt.date == d]
+        count = int(len(day_rows))
+        start_str = pd.to_datetime(d).strftime("%Y-%m-%d")
+        title = "Reminder" if count <= 1 else f"Reminder + {count - 1}"
+        events.append({
+            "id": f"rem-{start_str}",
+            "title": title,
+            "start": start_str,
+            "allDay": True,
+            "color": "#dc2626",
+            "extendedProps": {"date": start_str, "kind": "reminder"}
+        })
 
 options = {
     "initialView": "dayGridMonth",
@@ -317,68 +478,75 @@ if clicked_date:
     day = pd.to_datetime(clicked_date).date()
     # Always show all entries for the clicked date (across clusters)
     day_df = fdf[fdf["EventDate"].dt.date == day].reset_index(drop=True)
-    if day_df.empty:
+    day_rem = pd.DataFrame()
+    if not current_reminders_df.empty:
+        tmp = current_reminders_df.copy()
+        tmp["Date"] = pd.to_datetime(tmp["Date"], errors="coerce")
+        day_rem = tmp[tmp["Date"].dt.date == day].reset_index(drop=True)
+
+    if day_df.empty and day_rem.empty:
         st.info("No records for this date.")
     else:
         idx_state_key = f"idx_{clicked_date}"
         if idx_state_key not in st.session_state:
             st.session_state[idx_state_key] = 0
         col1, col2, col3 = st.columns([6,1,1])
-        i = st.session_state[idx_state_key]
-        i = int(np.clip(i, 0, len(day_df)-1))
-        row = day_df.iloc[i]
-        with col1:
-            client = str(row.get('Client', ''))
-            cluster = str(row.get('Cluster', ''))
-            cluster_color = cluster_colors.get(cluster, '#777777')
+        if not day_df.empty:
+            i = st.session_state[idx_state_key]
+            i = int(np.clip(i, 0, len(day_df)-1))
+            row = day_df.iloc[i]
+            with col1:
+                client = str(row.get('Client', ''))
+                cluster = str(row.get('Cluster', ''))
+                cluster_color = cluster_colors.get(cluster, '#777777')
 
-            # Header: Client name big
-            st.markdown(f"<div style='font-size:26px; font-weight:700; margin-bottom:6px;'>{client}</div>", unsafe_allow_html=True)
+                # Header: Client name big
+                st.markdown(f"<div style='font-size:26px; font-weight:700; margin-bottom:6px;'>{client}</div>", unsafe_allow_html=True)
 
-            # Cluster badge with background color
-            st.markdown(
-                f"<span style='display:inline-block; background:{cluster_color}; color:#ffffff; padding:4px 10px; border-radius:14px; font-weight:600; font-size:12px;'>"
-                f"{cluster}</span>",
-                unsafe_allow_html=True,
-            )
+                # Cluster badge with background color
+                st.markdown(
+                    f"<span style='display:inline-block; background:{cluster_color}; color:#ffffff; padding:4px 10px; border-radius:14px; font-weight:600; font-size:12px;'>"
+                    f"{cluster}</span>",
+                    unsafe_allow_html=True,
+                )
 
-            # Spacing
-            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                # Spacing
+                st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-            # Recent purchase info (normal)
-            recent_date = row.get('Current_ProductType_Date', row.get('Recent_Date', pd.NaT))
-            if pd.notna(recent_date):
-                try:
-                    recent_date = pd.to_datetime(recent_date).date()
-                except Exception:
-                    pass
-            recent_ptype = row.get('Current_ProductType', '')
-            st.markdown(f"<div>Recent Purchase Date: <strong>{recent_date if pd.notna(recent_date) else '-'}</strong></div>", unsafe_allow_html=True)
-            st.markdown(f"<div>Recent Product Type: <strong>{recent_ptype if pd.notna(recent_ptype) else '-'}</strong></div>", unsafe_allow_html=True)
+                # Recent purchase info (normal)
+                recent_date = row.get('Current_ProductType_Date', row.get('Recent_Date', pd.NaT))
+                if pd.notna(recent_date):
+                    try:
+                        recent_date = pd.to_datetime(recent_date).date()
+                    except Exception:
+                        pass
+                recent_ptype = row.get('Current_ProductType', '')
+                st.markdown(f"<div>Recent Purchase Date: <strong>{recent_date if pd.notna(recent_date) else '-'}</strong></div>", unsafe_allow_html=True)
+                st.markdown(f"<div>Recent Product Type: <strong>{recent_ptype if pd.notna(recent_ptype) else '-'}</strong></div>", unsafe_allow_html=True)
 
-            # Recommended info (bold and slightly bigger)
-            rec_ptype = row.get('Recommended_ProductType', '')
-            pred_date = row.get('Predicted_Purchase_Date', row.get('EventDate', pd.NaT))
-            if pd.notna(pred_date):
-                try:
-                    pred_date = pd.to_datetime(pred_date).date()
-                except Exception:
-                    pass
-            rec_amt = row.get('Recommended_Amount_P50', np.nan)
+                # Recommended info (bold and slightly bigger)
+                rec_ptype = row.get('Recommended_ProductType', '')
+                pred_date = row.get('Predicted_Purchase_Date', row.get('EventDate', pd.NaT))
+                if pd.notna(pred_date):
+                    try:
+                        pred_date = pd.to_datetime(pred_date).date()
+                    except Exception:
+                        pass
+                rec_amt = row.get('Recommended_Amount_P50', np.nan)
 
-            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-            st.markdown(
-                f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type: {rec_ptype if pd.notna(rec_ptype) else '-'}</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<div style='font-weight:700; font-size:15px;'>Predicted Purchase Date: {pred_date if pd.notna(pred_date) else '-'}</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type Amount: ${rec_amt:,.0f}</div>",
-                unsafe_allow_html=True,
-            )
+                st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type: {rec_ptype if pd.notna(rec_ptype) else '-'}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"<div style='font-weight:700; font-size:15px;'>Predicted Purchase Date: {pred_date if pd.notna(pred_date) else '-'}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"<div style='font-weight:700; font-size:15px;'>Recommended Product Type Amount: ${rec_amt:,.0f}</div>",
+                    unsafe_allow_html=True,
+                )
 
             # Confidence (bold green)
             conf = row.get('Confidence', None)
@@ -542,22 +710,44 @@ if clicked_date:
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             st.markdown("**Future Plan (AI Advisor)**")
             st.markdown(plan_text)
-        with col2:
-            if st.button("Prev", key=f"prev-{clicked_date}"):
-                st.session_state[idx_state_key] = (i - 1) % len(day_df)
-                st.rerun()
-        with col3:
-            if st.button("Next", key=f"next-{clicked_date}"):
-                st.session_state[idx_state_key] = (i + 1) % len(day_df)
-                st.rerun()
-        if st.button("Show all", key=f"showall-{clicked_date}"):
-            st.dataframe(day_df[[c for c in day_df.columns if c not in {"EventDate"}]].sort_values("Recommended_Amount_P50", ascending=False))
-            st.download_button(
-                label="Download shown (CSV)",
-                data=day_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"calendar_{clicked_date}.csv",
-                mime="text/csv",
-            )
+        if not day_df.empty:
+            with col2:
+                if st.button("Prev", key=f"prev-{clicked_date}"):
+                    st.session_state[idx_state_key] = (st.session_state[idx_state_key] - 1) % len(day_df)
+                    st.rerun()
+            with col3:
+                if st.button("Next", key=f"next-{clicked_date}"):
+                    st.session_state[idx_state_key] = (st.session_state[idx_state_key] + 1) % len(day_df)
+                    st.rerun()
+            if st.button("Show all", key=f"showall-{clicked_date}"):
+                st.dataframe(day_df[[c for c in day_df.columns if c not in {"EventDate"}]].sort_values("Recommended_Amount_P50", ascending=False))
+                st.download_button(
+                    label="Download shown (CSV)",
+                    data=day_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"calendar_{clicked_date}.csv",
+                    mime="text/csv",
+                )
+
+        # Reminders for this day
+        if not day_rem.empty:
+            st.markdown("---")
+            st.markdown("**Reminders**")
+            for ridx, r in day_rem.iterrows():
+                rcols = st.columns([6,1])
+                with rcols[0]:
+                    subj = str(r.get("Subject", "")).strip() or "(No subject)"
+                    content = str(r.get("Content", "")).strip() or "(No content)"
+                    st.markdown(f"**{subj}**")
+                    st.markdown(content)
+                with rcols[1]:
+                    if st.button("Delete", key=f"del-rem-{clicked_date}-{ridx}"):
+                        base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
+                        rid = str(r.get("ReminderId", ""))
+                        if rid:
+                            base_rem_df = base_rem_df[base_rem_df["ReminderId"].astype(str) != rid].reset_index(drop=True)
+                            commit_reminders_to_excel(base_rem_df, rem_path)
+                            st.session_state["reminders_df"] = base_rem_df
+                            st.rerun()
 
 st.dataframe(fdf.sort_values(["EventDate","Recommended_Amount_P50"], ascending=[True, False]))
 

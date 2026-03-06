@@ -10,6 +10,11 @@ import yfinance as yf
 from llm_parser import parse_instructions
 from rules import apply_actions, commit_to_excel
 from client_plan_llm import generate_client_plan, generate_market_outlook
+from data_manager import save_recommendations, save_reminders
+from agent_controller import generate_plan as agent_generate_plan
+from preview_engine import simulate as preview_simulate
+from calendar_tools import create_event as cal_create_event, update_event as cal_update_event, delete_event as cal_delete_event
+from client_tools import get_client_birth_date
 
 TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
@@ -297,6 +302,106 @@ st.caption(
     f"Clusters: {len([c for c in df['Cluster'].dropna().unique().tolist()])} | "
     f"Date range: {min_date.date() if min_date is not None else '-'} to {max_date.date() if max_date is not None else '-'}"
 )
+
+# ----- AI Agent (preview then confirm) -----
+if "agent_plan" not in st.session_state:
+    st.session_state["agent_plan"] = None
+if "agent_preview" not in st.session_state:
+    st.session_state["agent_preview"] = None
+if "agent_query" not in st.session_state:
+    st.session_state["agent_query"] = ""
+
+with st.expander("AI Agent", expanded=bool(st.session_state.get("agent_plan"))):
+    agent_query = st.text_input("Request", value=st.session_state["agent_query"], key="agent_request", placeholder="e.g. Schedule calls with the top 3 stock clients tomorrow")
+    col_run, _ = st.columns([1, 3])
+    if col_run.button("Generate plan", key="agent_run"):
+        if not (agent_query or "").strip():
+            st.warning("Enter a request.")
+        else:
+            st.session_state["agent_query"] = (agent_query or "").strip()
+            with st.spinner("Generating plan..."):
+                try:
+                    client_df = st.session_state.get("applied_df") if isinstance(st.session_state.get("applied_df"), pd.DataFrame) and len(st.session_state.get("applied_df", [])) > 0 else df
+                    rem_df = st.session_state.get("reminders_df", reminders_df)
+                    plan = agent_generate_plan((agent_query or "").strip(), client_df=client_df, reminders_df=rem_df)
+                    st.session_state["agent_plan"] = plan
+                    st.session_state["agent_preview"] = preview_simulate(plan, rem_df, client_df)
+                except Exception as e:
+                    st.error(str(e))
+                    st.session_state["agent_plan"] = None
+                    st.session_state["agent_preview"] = None
+
+    plan = st.session_state.get("agent_plan")
+    preview = st.session_state.get("agent_preview")
+    if plan:
+        st.markdown("**Reasoning:** " + (plan.get("reasoning") or "—"))
+    if preview:
+        if preview.get("events_to_create"):
+            st.markdown("**Events to create**")
+            st.dataframe(preview["events_to_create"], use_container_width=True)
+        if preview.get("events_to_modify"):
+            st.markdown("**Events to modify**")
+            st.json(preview["events_to_modify"])
+        if preview.get("events_to_delete"):
+            st.markdown("**Events to delete**")
+            st.dataframe(preview["events_to_delete"], use_container_width=True)
+        if preview.get("recommendation_changes"):
+            st.markdown("**Recommendation changes**")
+            st.dataframe(preview["recommendation_changes"], use_container_width=True)
+        if st.button("Confirm and apply", key="agent_confirm"):
+            try:
+                rem_df = st.session_state.get("reminders_df", reminders_df).copy()
+                rec_df = st.session_state.get("applied_df") if isinstance(st.session_state.get("applied_df"), pd.DataFrame) and len(st.session_state.get("applied_df", [])) > 0 else df.copy()
+                plan = st.session_state["agent_plan"]
+                for item in plan.get("events_to_create") or []:
+                    if isinstance(item, dict):
+                        title = (item.get("title") or "").strip()
+                        client_id = (item.get("client") or "").strip()
+                        d = None
+                        # For birthday reminders, always use Client_Birthdate from the sheet (DD/MM) so dates are correct
+                        if "birthday" in title.lower() and client_id and "Client_Birthdate" in rec_df.columns:
+                            d = get_client_birth_date(client_id, rec_df, date.today().year)
+                        if d is None:
+                            d = item.get("date")
+                            if isinstance(d, str):
+                                d = pd.to_datetime(d).date() if d else date.today()
+                            elif d is not None and hasattr(d, "date"):
+                                d = d.date()
+                            else:
+                                d = date.today()
+                        result = cal_create_event(
+                            item.get("client", ""),
+                            d,
+                            item.get("title", "Reminder"),
+                            item.get("amount"),
+                            reminders_df=rem_df,
+                        )
+                        if result.get("reminders_df") is not None:
+                            rem_df = result["reminders_df"]
+                for item in plan.get("events_to_modify") or []:
+                    if isinstance(item, dict) and item.get("id") and item.get("fields"):
+                        rem_df = cal_update_event(item["id"], item["fields"], rem_df)
+                for eid in plan.get("events_to_delete") or []:
+                    if isinstance(eid, str):
+                        rem_df = cal_delete_event(eid, rem_df)
+                for item in plan.get("recommendation_changes") or []:
+                    if isinstance(item, dict) and item.get("client") and item.get("field") is not None:
+                        mask = rec_df["Client"].astype(str).str.strip() == str(item["client"]).strip()
+                        if mask.any() and item["field"] in rec_df.columns:
+                            rec_df.loc[mask, item["field"]] = item.get("value")
+                save_reminders(rem_df, rem_path)
+                if plan.get("recommendation_changes"):
+                    save_recommendations(rec_df, rec_path)
+                    st.session_state["applied_df"] = rec_df
+                    st.session_state["use_overrides"] = True
+                st.session_state["reminders_df"] = rem_df
+                st.session_state["agent_plan"] = None
+                st.session_state["agent_preview"] = None
+                st.session_state["agent_query"] = ""
+                st.success("Changes applied.")
+                st.rerun()
+            except Exception as e:
+                st.error("Apply failed: " + str(e))
 
 st.sidebar.markdown("### Natural language overrides")
 nl_text = st.sidebar.text_area("Type instructions", height=100)

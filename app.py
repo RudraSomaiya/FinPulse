@@ -762,19 +762,28 @@ if clicked_date:
                 unsafe_allow_html=True,
             )
 
-            # Market outlook (LLM-rewritten using writing profile)
+            # Market outlook (LLM-rewritten using writing profile) - Manual generation
             if "market_outlook_text" not in st.session_state:
-                if _profile_text and _outlook_text:
-                    with st.spinner("Generating market outlook..."):
-                        st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
-                else:
-                    st.session_state["market_outlook_text"] = "Market outlook is not available."
+                st.session_state["market_outlook_text"] = "Click 'Generate Market Outlook' to create personalized outlook."
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            st.markdown("**Market outlook**")
+            
+            # Market outlook section with generate button
+            col_outlook, col_generate = st.columns([4, 1])
+            with col_outlook:
+                st.markdown("**Market outlook**")
+            with col_generate:
+                if st.button("Generate", key="generate_market_outlook", help="Generate personalized market outlook using writing profile"):
+                    if _profile_text and _outlook_text:
+                        with st.spinner("Generating market outlook..."):
+                            st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
+                    else:
+                        st.session_state["market_outlook_text"] = "Market outlook is not available (missing profile or source text)."
+                        st.warning("Missing writing profile or source market outlook text.")
+            
             st.markdown(st.session_state.get("market_outlook_text", "-"))
 
-            # AI-generated future plan paragraph
+            # AI-generated future plan paragraph - Manual generation
             client_id = str(row.get('Client', '')).strip()
             hist = client_history_map.get(client_id, {})
             tx_list = hist.get("transactions", [])
@@ -814,13 +823,22 @@ if clicked_date:
             cache = st.session_state["client_plan_cache"]
             cache_key = client_id or client
             plan_text = cache.get(cache_key)
+            
             if not plan_text:
-                with st.spinner("Generating future plan..."):
-                    plan_text = generate_client_plan(plan_context)
-                cache[cache_key] = plan_text
+                plan_text = f"Click 'Generate Plan' to create personalized investment plan for {client}."
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            st.markdown("**Future Plan (AI Advisor)**")
+            
+            # Client plan section with generate button
+            col_plan, col_generate = st.columns([4, 1])
+            with col_plan:
+                st.markdown("**Future Plan (AI Advisor)**")
+            with col_generate:
+                if st.button("Generate", key=f"generate_client_plan_{cache_key}", help="Generate personalized investment plan"):
+                    with st.spinner("Generating future plan..."):
+                        plan_text = generate_client_plan(plan_context)
+                        cache[cache_key] = plan_text
+
             st.markdown(plan_text)
         if not day_df.empty:
             with col2:

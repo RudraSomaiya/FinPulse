@@ -312,7 +312,7 @@ if "agent_query" not in st.session_state:
     st.session_state["agent_query"] = ""
 
 with st.expander("AI Agent", expanded=bool(st.session_state.get("agent_plan"))):
-    agent_query = st.text_input("Request", value=st.session_state["agent_query"], key="agent_request", placeholder="e.g. Schedule calls with the top 3 stock clients tomorrow")
+    agent_query = st.text_input("Request", value=st.session_state["agent_query"], key="agent_request")
     col_run, _ = st.columns([1, 3])
     if col_run.button("Generate plan", key="agent_run"):
         if not (agent_query or "").strip():
@@ -357,9 +357,16 @@ with st.expander("AI Agent", expanded=bool(st.session_state.get("agent_plan"))):
                     if isinstance(item, dict):
                         title = (item.get("title") or "").strip()
                         client_id = (item.get("client") or "").strip()
+                        use_birthdate = item.get("use_client_birthdate") is True
+                        birth_keywords = ("birthday", "birthdate", "birth date", "on their birth", "call on birth", "wish on birth", "on birthdates", "on birthdate")
+                        if not use_birthdate and title:
+                            use_birthdate = any(kw in title.lower() for kw in birth_keywords)
+                        if not use_birthdate:
+                            query = (st.session_state.get("agent_query") or "").lower()
+                            use_birthdate = any(kw in query for kw in birth_keywords)
                         d = None
-                        # For birthday reminders, always use Client_Birthdate from the sheet (DD/MM) so dates are correct
-                        if "birthday" in title.lower() and client_id and "Client_Birthdate" in rec_df.columns:
+                        # For any birthdate-related event, always use Client_Birthdate from the sheet (DD/MM); never use LLM date
+                        if use_birthdate and client_id and "Client_Birthdate" in rec_df.columns:
                             d = get_client_birth_date(client_id, rec_df, date.today().year)
                         if d is None:
                             d = item.get("date")

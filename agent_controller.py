@@ -48,7 +48,8 @@ from llm_router import ask_llm
 PLAN_JSON_SCHEMA = """
 Return a single JSON object with exactly these keys (use empty arrays where nothing to do):
 - "reasoning": string (brief explanation of what you will do)
-- "events_to_create": [ {"client": string, "date": "YYYY-MM-DD", "title": string, "amount": number or null} ]
+- "events_to_create": [ {"client": string, "date": "YYYY-MM-DD", "title": string, "amount": number or null, "use_client_birthdate": true|false} ]
+  For ANY event that is scheduled on a client's birth date (birthday wish, call on birthdate, etc.) you MUST set "use_client_birthdate": true. The system will then use the Client_Birthdate from the data (DD/MM) and ignore your "date" value. Do not invent dates for birthdate events.
 - "events_to_modify": [ {"id": string (ReminderId), "fields": {"Date": "YYYY-MM-DD"|null, "Subject": string|null, "Content": string|null} } ]
 - "events_to_delete": [ string ] (list of ReminderIds)
 - "recommendation_changes": [ {"client": string, "field": string (e.g. Recommended_Amount_P50), "value": number|string} ]
@@ -73,19 +74,24 @@ def _build_data_context(
             lines.append(f"Product types in data: {', '.join(types)}")
         else:
             types = []
-        # Top 3 and "All X with birth dates" for every product type in the data (ETF, STOCK, BOND, DPMS, UT, etc.)
+        # Ordered lists and "All X with birth dates" for every product type in the data (ETF, STOCK, BOND, DPMS, UT, etc.)
         for ptype in types:
             sub = filter_clients_by_recommended_product(ptype, client_df)
             if sub.empty:
                 continue
             if "Client" in sub.columns and "Total_Transactions" in sub.columns:
                 one_per_client = sub.sort_values("Total_Transactions", ascending=False, na_position="last").drop_duplicates(subset=["Client"], keep="first")
-                top = one_per_client.head(3)
+                total_count = len(one_per_client)
+                sample = one_per_client.head(min(25, total_count))
             else:
-                top = sub.head(3)
-            clients = top["Client"].astype(str).tolist() if "Client" in top.columns else []
+                total_count = len(sub)
+                sample = sub.head(min(25, total_count))
+            clients = sample["Client"].astype(str).tolist() if "Client" in sample.columns else []
             if clients:
-                lines.append(f"Top 3 {ptype} clients by Recommended_ProductType (by Total_Transactions): {', '.join(clients)}")
+                lines.append(
+                    f"{ptype} clients by Recommended_ProductType ordered by Total_Transactions "
+                    f"(first {len(clients)} of {total_count}): {', '.join(clients)}"
+                )
             # Full list of this product type's clients with birth dates this year (for "wish X on birthdays" queries)
             bd_sub = get_birthdays(sub, year=today.year)
             if not bd_sub.empty and "Client" in bd_sub.columns and "birth_date" in bd_sub.columns:
@@ -180,7 +186,13 @@ DATA CONTEXT (use these exact client IDs and dates; do not invent clients):
 USER REQUEST:
 {user_query}
 
-For "wish X clients on their birthdays" (X = any product type: ETF, STOCK, BOND, DPMS, UT, etc.): use the exact list "All X clients with birth dates in YYYY" from DATA CONTEXT to create one event per client on that client's birth_date, with a title like "Birthday wish – <Client>".
+For ANY request about birthdays or birthdates (e.g. "wish X on birthdays", "call clients on their birthdates"): use the exact list "All X clients with birth dates in YYYY" from DATA CONTEXT. For each event that is on a client's birth date you MUST set "use_client_birthdate": true so the system uses the real date from the data; do not invent or guess dates.
+
+For ANY request of the form "top K <PRODUCT> clients" (for example "top 7 STOCK clients by number of transactions"), you MUST:
+- Treat K as the requested number.
+- Look at the "<PRODUCT> clients by Recommended_ProductType ordered by Total_Transactions (first N of TOTAL): ..." line in DATA CONTEXT.
+- Select the first min(K, TOTAL) distinct client IDs from that ordered list and create events for ALL of them. Do NOT arbitrarily cap this at 3.
+
 {PLAN_JSON_SCHEMA}
 
 Output only the JSON object, no other text."""

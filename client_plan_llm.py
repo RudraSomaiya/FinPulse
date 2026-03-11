@@ -326,3 +326,66 @@ def generate_market_outlook(profile_text: str, outlook_text: str) -> str:
     except Exception as e:
         print("[client_plan_llm] Unexpected error in generate_market_outlook:", repr(e))
         return "Market outlook is temporarily unavailable (unexpected error). Please try again later."
+
+
+def _build_reminder_content_prompt(profile_text: str, reminder_title: str, user_prompt: str) -> str:
+    """Build a prompt to generate reminder content using writing profile."""
+    profile = (profile_text or "").strip()
+    title = (reminder_title or "").strip()
+    prompt = (user_prompt or "").strip()
+
+    parts: List[str] = []
+    parts.append(
+        "You are an expert financial writer helping a relationship manager prepare reminder content/messages for clients. "
+        "You will be given (1) a writing style profile, (2) a reminder title, and (3) a user prompt describing what content to generate. "
+        "Your task is to write concise, professional message/content that follows the tone, style and formatting rules in the writing profile. "
+        "The content should be suitable for the reminder title and address the user's requirements."
+    )
+
+    parts.append("\n\nWRITING STYLE PROFILE (GUIDELINES):\n" + profile + "\n")
+    parts.append(f"REMINDER TITLE: {title}\n")
+    parts.append(f"USER REQUEST: {prompt}\n")
+    parts.append(
+        "\n\nInstructions:\n"
+        "- Write professional, concise content suitable for the reminder title\n"
+        "- Follow the writing style profile exactly (tone, formality, greetings, sign-offs)\n"
+        "- IMPORTANT: For client names - only use a name if clearly mentioned in the reminder title (e.g., 'Call with Client B3', 'recommendation for John')\n"
+        "- If no specific client name is evident in the title, write without any greeting or use a general approach\n"
+        "- NEVER use placeholders like [Name], [Client], or similar - either use the actual name or no name at all\n"
+        "- The message/reminder content should sound natural and convincing with or without a name\n"
+        "- Do not include meta text like 'Here is the content' or placeholders\n"
+        "- Output only the final reminder content, nothing else"
+    )
+
+    return "\n".join(parts)
+
+
+def generate_reminder_content(profile_text: str, reminder_title: str, user_prompt: str) -> str:
+    """Generate reminder content using writing profile.
+
+    Uses Gemini 2.5 flash when available, falling back to a local Qwen/Ollama model.
+    Returns the generated content, or a short fallback message on failure.
+    """
+    try:
+        if not (profile_text and reminder_title and user_prompt):
+            return "Content generation temporarily unavailable (missing required inputs)."
+
+        prompt = _build_reminder_content_prompt(profile_text, reminder_title, user_prompt)
+
+        # Primary: Gemini 2.5 Flash
+        text = _call_gemini(prompt)
+        if text:
+            return str(text).strip()
+
+        print("[client_plan_llm] Gemini unavailable for reminder content, falling back to local model (Ollama/Qwen).")
+
+        # Fallback: local model (Ollama/Qwen)
+        text = _call_ollama(prompt)
+        if text:
+            return str(text).strip()
+
+        print("[client_plan_llm] Both Gemini and local model (Ollama) returned no text for reminder content.")
+        return "Content generation temporarily unavailable (both models failed). Please try again later."
+    except Exception as e:
+        print("[client_plan_llm] Unexpected error in generate_reminder_content:", repr(e))
+        return "Content generation temporarily unavailable (unexpected error). Please try again later."

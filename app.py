@@ -9,7 +9,7 @@ import numpy as np
 import yfinance as yf
 from llm_parser import parse_instructions
 from rules import apply_actions, commit_to_excel
-from client_plan_llm import generate_client_plan, generate_market_outlook
+from client_plan_llm import generate_client_plan, generate_market_outlook, generate_reminder_content
 from data_manager import save_recommendations, save_reminders
 from agent_controller import generate_plan as agent_generate_plan
 from preview_engine import simulate as preview_simulate
@@ -762,14 +762,14 @@ if clicked_date:
                 unsafe_allow_html=True,
             )
 
-            # Market outlook (LLM-rewritten using writing profile) - Manual generation
+            # Market outlook (LLM-rewritten using writing profile) - Manual generation with editing
             if "market_outlook_text" not in st.session_state:
                 st.session_state["market_outlook_text"] = "Click 'Generate Market Outlook' to create personalized outlook."
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             
-            # Market outlook section with generate button
-            col_outlook, col_generate = st.columns([4, 1])
+            # Market outlook section with generate and edit buttons
+            col_outlook, col_generate, col_edit = st.columns([3, 1, 1])
             with col_outlook:
                 st.markdown("**Market outlook**")
             with col_generate:
@@ -780,8 +780,32 @@ if clicked_date:
                     else:
                         st.session_state["market_outlook_text"] = "Market outlook is not available (missing profile or source text)."
                         st.warning("Missing writing profile or source market outlook text.")
+            with col_edit:
+                if st.button("✏️", key="edit_market_outlook", help="Edit market outlook"):
+                    st.session_state["edit_market_outlook"] = True
+                    st.rerun()
             
-            st.markdown(st.session_state.get("market_outlook_text", "-"))
+            # Check if market outlook is in edit mode
+            if st.session_state.get("edit_market_outlook", False):
+                edited_outlook = st.text_area(
+                    "Edit Market Outlook:",
+                    value=st.session_state.get("market_outlook_text", ""),
+                    key="edit_outlook_text",
+                    height=200
+                )
+                
+                col_save, col_cancel = st.columns([1, 1])
+                with col_save:
+                    if st.button("💾 Save", key="save_outlook"):
+                        st.session_state["market_outlook_text"] = edited_outlook
+                        st.session_state["edit_market_outlook"] = False
+                        st.rerun()
+                with col_cancel:
+                    if st.button("❌ Cancel", key="cancel_outlook"):
+                        st.session_state["edit_market_outlook"] = False
+                        st.rerun()
+            else:
+                st.markdown(st.session_state.get("market_outlook_text", "-"))
 
             # AI-generated future plan paragraph - Manual generation
             client_id = str(row.get('Client', '')).strip()
@@ -863,18 +887,121 @@ if clicked_date:
             st.markdown("---")
             st.markdown("**Reminders**")
             for ridx, r in day_rem.iterrows():
-                rcols = st.columns([6,1])
+                rcols = st.columns([6, 1, 1])
                 with rcols[0]:
-                    subj = str(r.get("Subject", "")).strip() or "(No subject)"
-                    content = str(r.get("Content", "")).strip() or "(No content)"
-                    st.markdown(f"**{subj}**")
-                    st.markdown(content)
+                    reminder_id = str(r.get("ReminderId", ""))
+                    
+                    # Check if this reminder is in edit mode
+                    edit_key = f"edit_reminder_{clicked_date}_{ridx}"
+                    is_editing = st.session_state.get(edit_key, False)
+                    
+                    if is_editing:
+                        # Edit mode - show input fields
+                        edited_subject = st.text_input(
+                            "Title:",
+                            value=str(r.get("Subject", "")).strip() or "",
+                            key=f"edit_subject_{edit_key}"
+                        )
+                        edited_content = st.text_area(
+                            "Content:",
+                            value=str(r.get("Content", "")).strip() or "",
+                            key=f"edit_content_{edit_key}",
+                            height=100
+                        )
+                        
+                        col_save, col_cancel = st.columns([1, 1])
+                        with col_save:
+                            if st.button("💾", key=f"save_{edit_key}", help="Save changes"):
+                                # Update the reminder
+                                base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
+                                if reminder_id:
+                                    mask = base_rem_df["ReminderId"].astype(str) == reminder_id
+                                    if mask.any():
+                                        base_rem_df.loc[mask, "Subject"] = edited_subject
+                                        base_rem_df.loc[mask, "Content"] = edited_content
+                                        commit_reminders_to_excel(base_rem_df, rem_path)
+                                        st.session_state["reminders_df"] = base_rem_df
+                                        st.session_state[edit_key] = False
+                                        st.rerun()
+                        with col_cancel:
+                            if st.button("❌", key=f"cancel_edit_{edit_key}", help="Cancel editing"):
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                    else:
+                        # Display mode - show content with edit button
+                        subj = str(r.get("Subject", "")).strip() or "(No subject)"
+                        content = str(r.get("Content", "")).strip() or "(No content)"
+                        
+                        # Make title and content clickable for editing
+                        col_title, col_edit_btn = st.columns([5, 1])
+                        with col_title:
+                            if st.markdown(f"**{subj}**"):
+                                pass
+                        with col_edit_btn:
+                            if st.button("✏️", key=f"edit_title_{edit_key}", help="Edit title and content"):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+                        
+                        st.markdown(content)
+                    
+                    # Check if this reminder has an active input box for generation
+                    dialog_key = f"generate_dialog_{clicked_date}_{ridx}"
+                    if dialog_key in st.session_state and st.session_state[dialog_key].get("show_input", False):
+                        # Compact inline input with Send/Cancel buttons
+                        col_input, col_send, col_cancel = st.columns([4, 1, 1])
+                        with col_input:
+                            user_prompt = st.text_input(
+                                "Describe content to generate:",
+                                key=f"prompt_{dialog_key}",
+                                label_visibility="collapsed"
+                            )
+                        with col_send:
+                            if st.button("📤", key=f"send_{dialog_key}", help="Send"):
+                                if user_prompt.strip():
+                                    with st.spinner("Generating..."):
+                                        generated_content = generate_reminder_content(
+                                            _profile_text, 
+                                            str(r.get("Subject", "")).strip(), 
+                                            user_prompt.strip()
+                                        )
+                                        
+                                        # Update the reminder content
+                                        base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
+                                        if reminder_id:
+                                            mask = base_rem_df["ReminderId"].astype(str) == reminder_id
+                                            if mask.any():
+                                                base_rem_df.loc[mask, "Content"] = generated_content
+                                                commit_reminders_to_excel(base_rem_df, rem_path)
+                                                st.session_state["reminders_df"] = base_rem_df
+                                                
+                                                # Close the input box
+                                                st.session_state[dialog_key]["show_input"] = False
+                                                st.rerun()
+                                else:
+                                    st.warning("Please enter a prompt")
+                        with col_cancel:
+                            if st.button("❌", key=f"cancel_{dialog_key}", help="Cancel"):
+                                st.session_state[dialog_key]["show_input"] = False
+                                st.rerun()
+                        
+                        st.markdown("---")  # Separator after input box
+                        
                 with rcols[1]:
+                    if not st.session_state.get(f"edit_reminder_{clicked_date}_{ridx}", False):
+                        if st.button("Generate", key=f"gen-rem-{clicked_date}-{ridx}", help="Generate content using AI"):
+                            # Store the reminder info and show input box
+                            st.session_state[f"generate_dialog_{clicked_date}_{ridx}"] = {
+                                "reminder_id": reminder_id,
+                                "subject": str(r.get("Subject", "")).strip(),
+                                "content": str(r.get("Content", "")).strip(),
+                                "show_input": True
+                            }
+                            st.rerun()
+                with rcols[2]:
                     if st.button("Delete", key=f"del-rem-{clicked_date}-{ridx}"):
                         base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
-                        rid = str(r.get("ReminderId", ""))
-                        if rid:
-                            base_rem_df = base_rem_df[base_rem_df["ReminderId"].astype(str) != rid].reset_index(drop=True)
+                        if reminder_id:
+                            base_rem_df = base_rem_df[base_rem_df["ReminderId"].astype(str) != reminder_id].reset_index(drop=True)
                             commit_reminders_to_excel(base_rem_df, rem_path)
                             st.session_state["reminders_df"] = base_rem_df
                             st.rerun()

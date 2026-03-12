@@ -45,6 +45,7 @@ def create_event(
     title: str,
     amount: float | None = None,
     reminders_df: pd.DataFrame | None = None,
+    content: str | None = None,
 ) -> dict[str, Any]:
     """
     Build a new reminder row (ReminderId, Date, Subject, Content).
@@ -56,14 +57,19 @@ def create_event(
     ts = int(dt.now().timestamp() * 1000)
     seq = len(reminders_df) + 1 if reminders_df is not None and not reminders_df.empty else 1
     rid = f"R-{ts}-{seq}"
-    content = str(client or "").strip()
-    if amount is not None:
-        content = f"{content}\nAmount: {amount}" if content else f"Amount: {amount}"
+    
+    if content:
+        final_content = content.strip()
+    else:
+        final_content = str(client or "").strip()
+        if amount is not None:
+            final_content = f"{final_content}\nAmount: {amount}" if final_content else f"Amount: {amount}"
+            
     row = {
         "ReminderId": rid,
         "Date": pd.Timestamp(date_val),
         "Subject": (title or "").strip() or "Reminder",
-        "Content": content.strip(),
+        "Content": final_content.strip(),
     }
     if reminders_df is not None:
         new_df = pd.concat(

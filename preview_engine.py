@@ -36,6 +36,7 @@ def simulate(
             "date": item.get("date"),
             "title": item.get("title", ""),
             "amount": item.get("amount"),
+            "content": item.get("content"),
         })
 
     # Events to modify: resolve by id, show before/after

@@ -48,8 +48,9 @@ from llm_router import ask_llm
 PLAN_JSON_SCHEMA = """
 Return a single JSON object with exactly these keys (use empty arrays where nothing to do):
 - "reasoning": string (brief explanation of what you will do)
-- "events_to_create": [ {"client": string, "date": "YYYY-MM-DD", "title": string, "amount": number or null, "use_client_birthdate": true|false} ]
+- "events_to_create": [ {"client": string, "date": "YYYY-MM-DD", "title": string, "amount": number or null, "use_client_birthdate": true|false, "content": string|null} ]
   For ANY event that is scheduled on a client's birth date (birthday wish, call on birthdate, etc.) you MUST set "use_client_birthdate": true. The system will then use the Client_Birthdate from the data (DD/MM) and ignore your "date" value. Do not invent dates for birthdate events.
+  If the user's request explicitly asks to generate content (e.g. draft an email, prepare notes) for the reminders being created, generate the requested text and put it in the "content" field. If they ask for content for ALL reminders, generate tailored content for each. If for specific reminders, selectively generate it. If no content generation is requested, leave "content" as null.
 - "events_to_modify": [ {"id": string (ReminderId), "fields": {"Date": "YYYY-MM-DD"|null, "Subject": string|null, "Content": string|null} } ]
 - "events_to_delete": [ string ] (list of ReminderIds)
 - "recommendation_changes": [ {"client": string, "field": string (e.g. Recommended_Amount_P50), "value": number|string} ]
@@ -156,6 +157,7 @@ def generate_plan(
     client_df: pd.DataFrame | None = None,
     reminders_df: pd.DataFrame | None = None,
     today: date | None = None,
+    profile_text: str | None = None,
 ) -> dict[str, Any]:
     """
     Receive user query and optional data; run read-only tools to build context;
@@ -194,8 +196,11 @@ For ANY request of the form "top K <PRODUCT> clients" (for example "top 7 STOCK 
 - Select the first min(K, TOTAL) distinct client IDs from that ordered list and create events for ALL of them. Do NOT arbitrarily cap this at 3.
 
 {PLAN_JSON_SCHEMA}
+"""
+    if profile_text:
+        prompt += f"\nWRITING STYLE PROFILE (GUIDELINES):\nIf you choose to generate 'content' for reminders, you must strictly follow the tone, style, greetings, and formatting laid out in this profile:\n{profile_text.strip()}\n"
 
-Output only the JSON object, no other text."""
+    prompt += "\nOutput only the JSON object, no other text."
 
     response = ask_llm(prompt)
     plan = _extract_json(response)

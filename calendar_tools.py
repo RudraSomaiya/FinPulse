@@ -70,6 +70,8 @@ def create_event(
         "Date": pd.Timestamp(date_val),
         "Subject": (title or "").strip() or "Reminder",
         "Content": final_content.strip(),
+        "Edited": "0",
+        "Date of edit": pd.NaT,
     }
     if reminders_df is not None:
         new_df = pd.concat(

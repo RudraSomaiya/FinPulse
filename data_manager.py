@@ -109,20 +109,22 @@ def load_recommendations(path: str = DEFAULT_REC_PATH) -> pd.DataFrame:
 
 def load_reminders(path: str = DEFAULT_REM_PATH) -> pd.DataFrame:
     """
-    Load reminders dataset. Ensures columns ReminderId, Date, Subject, Content; Date as datetime.
+    Load reminders dataset. Ensures columns ReminderId, Date, Subject, Content, Edited, Date of edit; Date as datetime.
     """
     if not os.path.exists(path):
-        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content"])
+        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"])
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         return df
     try:
         df = pd.read_excel(path)
     except Exception:
-        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content"])
-    for col in ["ReminderId", "Date", "Subject", "Content"]:
+        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"])
+    for col in ["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"]:
         if col not in df.columns:
-            if col == "Date":
+            if col == "Date" or col == "Date of edit":
                 df[col] = pd.NaT
+            elif col == "Edited":
+                df[col] = "0"
             else:
                 df[col] = ""
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")

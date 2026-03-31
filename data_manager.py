@@ -12,6 +12,31 @@ import pandas as pd
 
 DEFAULT_REC_PATH = "recommendationOutput.xlsx"
 DEFAULT_REM_PATH = "reminders.xlsx"
+DEFAULT_TX_PATH = "cleaned_data.xlsx"
+
+
+def get_transaction_schema() -> list[str]:
+    """Return column names for the transaction dataset (for agent schema prompts)."""
+    return [
+        "Client number",
+        "Product Type",
+        "Product Name",
+        "Transaction Amount (SGD)",
+        "Transaction Date",
+        "Fund House/Issuer/Exchange",
+        "Account Type",
+        "Transaction Mode",
+    ]
+
+
+def load_transactions(path: str = DEFAULT_TX_PATH) -> pd.DataFrame:
+    """Load cleaned transaction history. Returns empty DataFrame on failure."""
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
 
 
 def get_recommendation_schema() -> list[str]:

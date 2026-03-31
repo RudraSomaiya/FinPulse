@@ -39,7 +39,9 @@ from client_tools import (
 from data_manager import (
     get_recommendation_schema,
     get_reminder_schema,
+    get_transaction_schema,
     load_reminders,
+    load_transactions,
 )
 from calendar_tools import get_events
 from llm_router import ask_llm
@@ -63,6 +65,7 @@ def _build_data_context(
     client_df: pd.DataFrame,
     reminders_df: pd.DataFrame,
     today: date,
+    tx_df: pd.DataFrame | None = None,
 ) -> str:
     """Run read-only tools and build a context string for the LLM.
     Uses Recommended_ProductType only for product-type lists (so 'ETF clients' = clients we recommend ETF to).
@@ -119,6 +122,63 @@ def _build_data_context(
         if events:
             sample = events[:5]
             lines.append("Sample reminders: " + "; ".join(f"{e.get('id')} on {e.get('date')} - {e.get('subject')}" for e in sample))
+    # --- Transaction history from cleaned_data.xlsx ---
+    if tx_df is not None and not tx_df.empty:
+        lines.append("\n--- TRANSACTION HISTORY (cleaned_data.xlsx) ---")
+        col_client = "Client number"
+        col_prod = "Product Type"
+        col_prod_name = "Product Name"
+        col_amt = "Transaction Amount (SGD)"
+        col_date = "Transaction Date"
+
+        lines.append(f"Total transaction rows: {len(tx_df)}")
+
+        # Per-product-type aggregation
+        if col_prod in tx_df.columns:
+            prod_agg = tx_df.groupby(col_prod).agg(
+                count=(col_prod, "size"),
+                total_sgd=(col_amt, "sum") if col_amt in tx_df.columns else (col_prod, "size"),
+            ).reset_index()
+            prod_lines = []
+            for _, pr in prod_agg.iterrows():
+                ptype = str(pr[col_prod]).strip()
+                cnt = int(pr["count"])
+                total = pr.get("total_sgd")
+                if total is not None and col_amt in tx_df.columns:
+                    prod_lines.append(f"{ptype}: {cnt} txns, total {float(total):,.0f} SGD")
+                else:
+                    prod_lines.append(f"{ptype}: {cnt} txns")
+            lines.append("Product type breakdown: " + "; ".join(prod_lines))
+
+        # Per-client summary: first purchase, last purchase, products, total amount
+        # This is the KEY data the LLM needs for queries like "1 year after first purchase"
+        if col_client in tx_df.columns and col_date in tx_df.columns:
+            tx_dated = tx_df.copy()
+            tx_dated[col_date] = pd.to_datetime(tx_dated[col_date], errors="coerce")
+            lines.append("\nPer-client transaction summary (first_purchase | last_purchase | products | total_amount | txn_count):")
+            for cid, grp in tx_dated.groupby(col_client):
+                cid_str = str(cid).strip()
+                dated = grp.dropna(subset=[col_date])
+                if dated.empty:
+                    first_dt = "-"
+                    last_dt = "-"
+                else:
+                    first_dt = dated[col_date].min().strftime("%Y-%m-%d")
+                    last_dt = dated[col_date].max().strftime("%Y-%m-%d")
+                products = sorted({str(p).strip() for p in grp[col_prod].dropna().astype(str).tolist()}) if col_prod in grp.columns else []
+                total_amt = None
+                if col_amt in grp.columns and not grp[col_amt].isna().all():
+                    try:
+                        total_amt = float(grp[col_amt].sum())
+                    except Exception:
+                        total_amt = None
+                amt_s = f"{total_amt:,.0f} SGD" if total_amt is not None else "-"
+                cnt = len(grp)
+                lines.append(
+                    f"  {cid_str}: first={first_dt} | last={last_dt} | "
+                    f"products={', '.join(products) if products else '-'} | "
+                    f"total={amt_s} | count={cnt}"
+                )
 
     return "\n".join(lines)
 
@@ -152,12 +212,39 @@ def _extract_json(text: str) -> dict[str, Any]:
     return {}
 
 
+def _needs_transaction_data(query: str) -> bool:
+    """Lightweight keyword check: does the user query need actual transaction history?
+
+    Returns True when the query references past purchases, transaction amounts,
+    first/last buys, specific contract details, or similar historical data.
+    Returns False for simple scheduling, birthday wishes, or recommendation edits
+    — keeping the LLM context small and saving tokens.
+    """
+    q = (query or "").lower()
+    triggers = [
+        "transaction", "purchase", "bought", "first buy", "last buy",
+        "first purchase", "last purchase", "transacted", "spending",
+        "historical", "history", "past investment", "past purchase",
+        "contract", "account no", "fund house", "issuer", "exchange",
+        "payment method", "transaction mode", "transaction amount",
+        "transaction date", "cleaned_data", "cleaned data",
+        "how much did", "what did", "when did", "product name",
+        "total spent", "total invested", "invested amount",
+        "first investment", "recent investment", "recent purchase",
+        "years after", "year after", "months after", "month after",
+        "anniversary", "since their", "since first", "since last",
+        "after their first", "after their last", "after first", "after last",
+    ]
+    return any(t in q for t in triggers)
+
+
 def generate_plan(
     user_query: str,
     client_df: pd.DataFrame | None = None,
     reminders_df: pd.DataFrame | None = None,
     today: date | None = None,
     profile_text: str | None = None,
+    tx_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     Receive user query and optional data; run read-only tools to build context;
@@ -171,19 +258,31 @@ def generate_plan(
     if reminders_df is None:
         reminders_df = load_reminders()
 
+    # Smart gate: only load/include transaction data when the query actually needs it
+    use_tx = _needs_transaction_data(user_query)
+    if use_tx:
+        if tx_df is None:
+            tx_df = load_transactions()
+    else:
+        tx_df = None  # intentionally skip to save tokens
+
     rec_schema = get_recommendation_schema()
     rem_schema = get_reminder_schema()
-    data_ctx = _build_data_context(client_df, reminders_df, today)
+    tx_schema = get_transaction_schema()
+    data_ctx = _build_data_context(client_df, reminders_df, today, tx_df=tx_df)
 
-    prompt = f"""You are a data-aware AI agent that manages a client recommendation dataset and a calendar (reminders).
+    prompt = f"""You are a data-aware AI agent that manages a client recommendation dataset, a calendar (reminders), and has access to actual transaction history.
 You must output a JSON execution plan. No changes are applied until the user confirms.
 
 SCHEMAS:
 - Recommendation columns: {', '.join(rec_schema)}
 - Reminder columns: {', '.join(rem_schema)}
+- Transaction history columns: {', '.join(tx_schema)}
 
 DATA CONTEXT (use these exact client IDs and dates; do not invent clients):
 {data_ctx}
+
+When the user asks about past purchases, transaction history, first/last purchase dates, or "who bought X", you MUST use the "Per-client transaction summary" in the TRANSACTION HISTORY section above. Each line shows: client_id: first=YYYY-MM-DD | last=YYYY-MM-DD | products=... | total=... | count=N. Use the "first" date for first purchase queries and the "last" date for last/recent purchase queries. When they ask about recommended products or model predictions, use the Recommendation data.
 
 USER REQUEST:
 {user_query}

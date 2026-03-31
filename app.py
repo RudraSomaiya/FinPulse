@@ -325,7 +325,7 @@ with st.expander("AI Agent", expanded=bool(st.session_state.get("agent_plan"))):
                 try:
                     client_df = st.session_state.get("applied_df") if isinstance(st.session_state.get("applied_df"), pd.DataFrame) and len(st.session_state.get("applied_df", [])) > 0 else df
                     rem_df = st.session_state.get("reminders_df", reminders_df)
-                    plan = agent_generate_plan((agent_query or "").strip(), client_df=client_df, reminders_df=rem_df, profile_text=_profile_text)
+                    plan = agent_generate_plan((agent_query or "").strip(), client_df=client_df, reminders_df=rem_df, profile_text=_profile_text, tx_df=tx_df)
                     st.session_state["agent_plan"] = plan
                     st.session_state["agent_preview"] = preview_simulate(plan, rem_df, client_df)
                 except Exception as e:

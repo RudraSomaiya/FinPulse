@@ -15,6 +15,7 @@ from agent_controller import generate_plan as agent_generate_plan
 from preview_engine import simulate as preview_simulate
 from calendar_tools import create_event as cal_create_event, update_event as cal_update_event, delete_event as cal_delete_event
 from client_tools import get_client_birth_date
+import email_sender
 
 TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
@@ -95,14 +96,14 @@ def load_text_file(path: str):
 @st.cache_data(show_spinner=False)
 def load_reminders(path: str, mtime: float):
     if not os.path.exists(path) or not mtime:
-        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"])
+        df = pd.DataFrame(columns=["ReminderId", "Client", "Date", "Subject", "Content", "Edited", "Date of edit"])
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         return df
     try:
         df = pd.read_excel(path)
     except Exception:
-        df = pd.DataFrame(columns=["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"])
-    for col in ["ReminderId", "Date", "Subject", "Content", "Edited", "Date of edit"]:
+        df = pd.DataFrame(columns=["ReminderId", "Client", "Date", "Subject", "Content", "Edited", "Date of edit"])
+    for col in ["ReminderId", "Client", "Date", "Subject", "Content", "Edited", "Date of edit"]:
         if col not in df.columns:
             if col == "Date" or col == "Date of edit":
                 df[col] = pd.NaT
@@ -140,6 +141,7 @@ def apply_reminder_rules(df: pd.DataFrame, rules: list[dict]) -> tuple[pd.DataFr
             date_val = rule.get("date")
             subject = str(rule.get("subject", "")).strip()
             content = str(rule.get("content", "")).strip()
+            client_name = str(rule.get("client", "")).strip()
             if not date_val or not subject:
                 continue
             target_ts = pd.to_datetime(date_val, errors="coerce")
@@ -153,6 +155,7 @@ def apply_reminder_rules(df: pd.DataFrame, rules: list[dict]) -> tuple[pd.DataFr
                 "Date": target_ts,
                 "Subject": subject,
                 "Content": content,
+                "Client": client_name,
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             added += 1
@@ -915,6 +918,40 @@ if clicked_date:
                         cache[cache_key] = plan_text
 
             st.markdown(plan_text)
+
+            # Email sending section
+            st.markdown("---")
+            col_mo_chk, col_fp_chk, col_send_email = st.columns([2, 2, 2])
+            with col_mo_chk:
+                send_mo = st.checkbox("Include Market Outlook", key=f"send_mo_{clicked_date}", value=True)
+            with col_fp_chk:
+                send_fp = st.checkbox("Include Client Summary", key=f"send_fp_{clicked_date}", value=True)
+            with col_send_email:
+                if st.button("Send via email", key=f"send_client_email_{clicked_date}", use_container_width=True):
+                    client_email = str(row.get("Client_email", "")).strip()
+                    if not client_email or client_email == 'nan':
+                        st.error(f"Client email missing for {client}")
+                    else:
+                        mo_text = st.session_state.get("market_outlook_text") if send_mo else None
+                        if mo_text in ("Click 'Generate Market Outlook' to create personalized outlook.", 
+                                       "Market outlook is not available (missing profile or source text)."):
+                            mo_text = None
+                        
+                        fp_text = plan_text if send_fp else None
+                        if fp_text and "Click 'Generate Plan'" in fp_text:
+                            fp_text = None
+                            
+                        if not mo_text and not fp_text:
+                            st.warning("Please select at least one generated section to send.")
+                        else:
+                            try:
+                                with st.spinner("Sending email..."):
+                                    email_sender.send_client_report(client_email, mo_text, fp_text)
+                                st.success("Email sent successfully!")
+                            except ValueError as e:
+                                st.error(str(e))
+                            except Exception as e:
+                                st.error(f"Failed to send: {str(e)}")
         if not day_df.empty:
             with col2:
                 if st.button("Prev", key=f"prev-{clicked_date}"):
@@ -937,9 +974,71 @@ if clicked_date:
         if not day_rem.empty:
             st.markdown("---")
             st.markdown("**Reminders**")
+
+            # Bulk actions
+            cols_rem_actions = st.columns([2, 2, 4])
+            with cols_rem_actions[0]:
+                if st.button("Send via email", key=f"btn_send_bulk_{clicked_date}", use_container_width=True):
+                    selected_idxs = []
+                    for ridx in day_rem.index:
+                        if st.session_state.get(f"chk_rem_{clicked_date}_{ridx}", False):
+                            selected_idxs.append(ridx)
+                    
+                    if not selected_idxs:
+                        st.warning("No reminders selected.")
+                    else:
+                        success_count = 0
+                        errors = []
+                        for ridx in selected_idxs:
+                            sel_r = day_rem.loc[ridx]
+                            subj = str(sel_r.get("Subject", "")).strip()
+                            content = str(sel_r.get("Content", "")).strip()
+                            rem_client_name = str(sel_r.get("Client", "")).strip()
+                            
+                            rem_client_email = ""
+                            if rem_client_name:
+                                match = df[df["Client"].astype(str).str.strip() == rem_client_name]
+                                if not match.empty:
+                                    rem_client_email = str(match["Client_email"].iloc[0]).strip()
+                                
+                            if not rem_client_email or rem_client_email == 'nan':
+                                errors.append(f"Email missing for {rem_client_name or 'Unknown Client'}")
+                                continue
+                                
+                            try:
+                                email_sender.send_reminder_email(rem_client_email, subj, content)
+                                success_count += 1
+                            except Exception as e:
+                                errors.append(str(e))
+                                
+                        if success_count > 0:
+                            st.success(f"Sent {success_count} reminder(s).")
+                        if errors:
+                            for e in set(errors):
+                                st.error(e)
+
+            with cols_rem_actions[1]:
+                if st.button("Delete", key=f"btn_del_bulk_{clicked_date}", use_container_width=True):
+                    selected_idxs = []
+                    for ridx in day_rem.index:
+                        if st.session_state.get(f"chk_rem_{clicked_date}_{ridx}", False):
+                            selected_idxs.append(ridx)
+                            
+                    if not selected_idxs:
+                        st.warning("No reminders selected.")
+                    else:
+                        rids_to_del = [str(day_rem.loc[x, "ReminderId"]) for x in selected_idxs]
+                        base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
+                        base_rem_df = base_rem_df[~base_rem_df["ReminderId"].astype(str).isin(rids_to_del)].reset_index(drop=True)
+                        commit_reminders_to_excel(base_rem_df, rem_path)
+                        st.session_state["reminders_df"] = base_rem_df
+                        st.rerun()
+
             for ridx, r in day_rem.iterrows():
-                rcols = st.columns([6, 1, 1])
+                rcols = st.columns([0.5, 6.5, 1])
                 with rcols[0]:
+                    st.checkbox("", key=f"chk_rem_{clicked_date}_{ridx}", label_visibility="collapsed")
+                with rcols[1]:
                     reminder_id = str(r.get("ReminderId", ""))
                     
                     # Check if this reminder is in edit mode
@@ -1039,7 +1138,7 @@ if clicked_date:
                         
                         st.markdown("---")  # Separator after input box
                         
-                with rcols[1]:
+                with rcols[2]:
                     if not st.session_state.get(f"edit_reminder_{clicked_date}_{ridx}", False):
                         if st.button("Generate", key=f"gen-rem-{clicked_date}-{ridx}", help="Generate content using AI"):
                             # Store the reminder info and show input box
@@ -1049,14 +1148,6 @@ if clicked_date:
                                 "content": str(r.get("Content", "")).strip(),
                                 "show_input": True
                             }
-                            st.rerun()
-                with rcols[2]:
-                    if st.button("Delete", key=f"del-rem-{clicked_date}-{ridx}"):
-                        base_rem_df = st.session_state.get("reminders_df", current_reminders_df).copy()
-                        if reminder_id:
-                            base_rem_df = base_rem_df[base_rem_df["ReminderId"].astype(str) != reminder_id].reset_index(drop=True)
-                            commit_reminders_to_excel(base_rem_df, rem_path)
-                            st.session_state["reminders_df"] = base_rem_df
                             st.rerun()
 
 st.dataframe(fdf.sort_values(["EventDate","Recommended_Amount_P50"], ascending=[True, False]))

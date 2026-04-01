@@ -15,7 +15,7 @@ def get_events(
     end_date: date | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Return list of events from reminders_df as { id, date, subject, content }.
+    Return list of events from reminders_df as { id, date, subject, content, client }.
     Optionally filter by start_date and end_date (inclusive).
     """
     if reminders_df is None or reminders_df.empty:
@@ -34,6 +34,7 @@ def get_events(
                 "date": row["Date"].date() if hasattr(row["Date"], "date") else row["Date"],
                 "subject": str(row.get("Subject", "")),
                 "content": str(row.get("Content", "")),
+                "client": str(row.get("Client", "")),
             }
         )
     return events
@@ -48,9 +49,7 @@ def create_event(
     content: str | None = None,
 ) -> dict[str, Any]:
     """
-    Build a new reminder row (ReminderId, Date, Subject, Content).
-    If reminders_df is provided, append in-memory and return the new row; caller must persist.
-    Otherwise return the row dict for preview only (no ReminderId needed for preview).
+    Build a new reminder row (ReminderId, Date, Subject, Content, Client).
     """
     from datetime import datetime as dt
 
@@ -70,6 +69,7 @@ def create_event(
         "Date": pd.Timestamp(date_val),
         "Subject": (title or "").strip() or "Reminder",
         "Content": final_content.strip(),
+        "Client": str(client or "").strip(),
         "Edited": "0",
         "Date of edit": pd.NaT,
     }
@@ -88,8 +88,7 @@ def update_event(
     reminders_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Find row by ReminderId == event_id, apply fields (Date, Subject, Content), return modified dataframe.
-    Caller must call data_manager.save_reminders to persist.
+    Find row by ReminderId == event_id, apply fields, return modified dataframe.
     """
     if reminders_df is None or reminders_df.empty:
         return reminders_df
@@ -97,7 +96,7 @@ def update_event(
     if not mask.any():
         return reminders_df
     out = reminders_df.copy()
-    for key in ("Date", "Subject", "Content"):
+    for key in ("Date", "Subject", "Content", "Client"):
         if key in fields:
             out.loc[mask, key] = fields[key]
     if "Date" in fields:

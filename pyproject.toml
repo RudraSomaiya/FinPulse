@@ -1,11 +1,10 @@
 [project]
 name = "jonathan"
 version = "0.1.0"
-description = "Add your description here"
+description = "Financial Advisory App"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "datetime>=5.5",
     "matplotlib>=3.10.7",
     "mlxtend>=0.23.4",
     "numpy>=2.3.4",
@@ -22,4 +21,5 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "yfinance>=0.2.50",
     "ipykernel>=7.1.0",
+    "nbformat",
 ]

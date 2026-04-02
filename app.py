@@ -16,6 +16,7 @@ from preview_engine import simulate as preview_simulate
 from calendar_tools import create_event as cal_create_event, update_event as cal_update_event, delete_event as cal_delete_event
 from client_tools import get_client_birth_date
 import email_sender
+import whatsapp_sender
 
 TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
@@ -919,28 +920,32 @@ if clicked_date:
 
             st.markdown(plan_text)
 
-            # Email sending section
+            # Email / WhatsApp sending section
             st.markdown("---")
-            col_mo_chk, col_fp_chk, col_send_email = st.columns([2, 2, 2])
+            col_mo_chk, col_fp_chk, col_send_email, col_send_wa = st.columns([2, 2, 1.5, 1.5])
             with col_mo_chk:
                 send_mo = st.checkbox("Include Market Outlook", key=f"send_mo_{clicked_date}", value=True)
             with col_fp_chk:
                 send_fp = st.checkbox("Include Client Summary", key=f"send_fp_{clicked_date}", value=True)
+
+            # -- helper to gather checked content --
+            def _gather_send_content():
+                mo_text = st.session_state.get("market_outlook_text") if send_mo else None
+                if mo_text in ("Click 'Generate Market Outlook' to create personalized outlook.",
+                               "Market outlook is not available (missing profile or source text)."):
+                    mo_text = None
+                fp_text = plan_text if send_fp else None
+                if fp_text and "Click 'Generate Plan'" in fp_text:
+                    fp_text = None
+                return mo_text, fp_text
+
             with col_send_email:
                 if st.button("Send via email", key=f"send_client_email_{clicked_date}", use_container_width=True):
                     client_email = str(row.get("Client_email", "")).strip()
                     if not client_email or client_email == 'nan':
                         st.error(f"Client email missing for {client}")
                     else:
-                        mo_text = st.session_state.get("market_outlook_text") if send_mo else None
-                        if mo_text in ("Click 'Generate Market Outlook' to create personalized outlook.", 
-                                       "Market outlook is not available (missing profile or source text)."):
-                            mo_text = None
-                        
-                        fp_text = plan_text if send_fp else None
-                        if fp_text and "Click 'Generate Plan'" in fp_text:
-                            fp_text = None
-                            
+                        mo_text, fp_text = _gather_send_content()
                         if not mo_text and not fp_text:
                             st.warning("Please select at least one generated section to send.")
                         else:
@@ -948,6 +953,25 @@ if clicked_date:
                                 with st.spinner("Sending email..."):
                                     email_sender.send_client_report(client_email, mo_text, fp_text)
                                 st.success("Email sent successfully!")
+                            except ValueError as e:
+                                st.error(str(e))
+                            except Exception as e:
+                                st.error(f"Failed to send: {str(e)}")
+
+            with col_send_wa:
+                if st.button("Send via WhatsApp", key=f"send_client_wa_{clicked_date}", use_container_width=True):
+                    client_phone = str(row.get("Client_phone_number", "")).strip()
+                    if not client_phone or client_phone == 'nan':
+                        st.error(f"Client phone number missing for {client}")
+                    else:
+                        mo_text, fp_text = _gather_send_content()
+                        if not mo_text and not fp_text:
+                            st.warning("Please select at least one generated section to send.")
+                        else:
+                            try:
+                                with st.spinner("Sending WhatsApp message..."):
+                                    whatsapp_sender.send_client_report(client_phone, mo_text, fp_text)
+                                st.success("WhatsApp message sent successfully!")
                             except ValueError as e:
                                 st.error(str(e))
                             except Exception as e:
@@ -976,7 +1000,7 @@ if clicked_date:
             st.markdown("**Reminders**")
 
             # Bulk actions
-            cols_rem_actions = st.columns([2, 2, 4])
+            cols_rem_actions = st.columns([2, 2, 2, 2])
             with cols_rem_actions[0]:
                 if st.button("Send via email", key=f"btn_send_bulk_{clicked_date}", use_container_width=True):
                     selected_idxs = []
@@ -1018,6 +1042,46 @@ if clicked_date:
                                 st.error(e)
 
             with cols_rem_actions[1]:
+                if st.button("Send via WhatsApp", key=f"btn_wa_bulk_{clicked_date}", use_container_width=True):
+                    selected_idxs = []
+                    for ridx in day_rem.index:
+                        if st.session_state.get(f"chk_rem_{clicked_date}_{ridx}", False):
+                            selected_idxs.append(ridx)
+
+                    if not selected_idxs:
+                        st.warning("No reminders selected.")
+                    else:
+                        success_count = 0
+                        errors = []
+                        for ridx in selected_idxs:
+                            sel_r = day_rem.loc[ridx]
+                            subj = str(sel_r.get("Subject", "")).strip()
+                            content = str(sel_r.get("Content", "")).strip()
+                            rem_client_name = str(sel_r.get("Client", "")).strip()
+
+                            rem_client_phone = ""
+                            if rem_client_name:
+                                match = df[df["Client"].astype(str).str.strip() == rem_client_name]
+                                if not match.empty and "Client_phone_number" in match.columns:
+                                    rem_client_phone = str(match["Client_phone_number"].iloc[0]).strip()
+
+                            if not rem_client_phone or rem_client_phone == 'nan':
+                                errors.append(f"Phone number missing for {rem_client_name or 'Unknown Client'}")
+                                continue
+
+                            try:
+                                whatsapp_sender.send_reminder_message(rem_client_phone, subj, content)
+                                success_count += 1
+                            except Exception as e:
+                                errors.append(str(e))
+
+                        if success_count > 0:
+                            st.success(f"Sent {success_count} WhatsApp message(s).")
+                        if errors:
+                            for e in set(errors):
+                                st.error(e)
+
+            with cols_rem_actions[2]:
                 if st.button("Delete", key=f"btn_del_bulk_{clicked_date}", use_container_width=True):
                     selected_idxs = []
                     for ridx in day_rem.index:

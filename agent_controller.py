@@ -101,6 +101,21 @@ def _build_data_context(
             if not bd_sub.empty and "Client" in bd_sub.columns and "birth_date" in bd_sub.columns:
                 rows = bd_sub.apply(lambda r: f"{r['Client']} ({r['birth_date']})", axis=1).tolist()
                 lines.append(f"All {ptype} clients with birth dates in {today.year}: {', '.join(rows)}")
+            # Pre-computed cross-reference: product-type clients with their first/last transaction dates
+            # This helps the LLM handle compound queries like "set up meeting with all ETF clients 2 years after first transaction"
+            if tx_df is not None and not tx_df.empty and "Client number" in tx_df.columns and "Transaction Date" in tx_df.columns:
+                tx_dated = tx_df.copy()
+                tx_dated["Transaction Date"] = pd.to_datetime(tx_dated["Transaction Date"], errors="coerce")
+                tx_first = tx_dated.dropna(subset=["Transaction Date"]).groupby("Client number")["Transaction Date"].min().reset_index()
+                tx_first.columns = ["Client", "first_tx_date"]
+                tx_first["Client"] = tx_first["Client"].astype(str).str.strip()
+                ptype_client_ids = set(c.strip() for c in clients)
+                tx_ptype = tx_first[tx_first["Client"].isin(ptype_client_ids)].copy()
+                if not tx_ptype.empty:
+                    tx_rows = []
+                    for _, tr in tx_ptype.sort_values("first_tx_date").iterrows():
+                        tx_rows.append(f"{tr['Client']} (first_tx={tr['first_tx_date'].strftime('%Y-%m-%d')})")
+                    lines.append(f"All {ptype} clients with first transaction dates: {', '.join(tx_rows)}")
         # General birthdays this year (all clients, sample if many)
         bd = get_birthdays(client_df, year=today.year)
         if not bd.empty and "Client" in bd.columns and "birth_date" in bd.columns:
@@ -293,6 +308,13 @@ For ANY request of the form "top K <PRODUCT> clients" (for example "top 7 STOCK 
 - Treat K as the requested number.
 - Look at the "<PRODUCT> clients by Recommended_ProductType ordered by Total_Transactions (first N of TOTAL): ..." line in DATA CONTEXT.
 - Select the first min(K, TOTAL) distinct client IDs from that ordered list and create events for ALL of them. Do NOT arbitrarily cap this at 3.
+
+For ANY request that combines a product type filter with transaction date arithmetic (e.g. "set up meeting with all ETF clients 2 years after their first transaction"), you MUST:
+1. Look at the "All <PRODUCT> clients with first transaction dates: ..." line in DATA CONTEXT. This gives each client's first transaction date.
+2. For EACH client in that list, compute the target date by adding the requested offset (e.g. +2 years) to their first_tx date.
+3. Create one event per client with the computed date. You MUST create events for ALL clients in the list, not just a sample.
+4. If a computed date falls in the past, still include it — the user may want a historical record.
+5. NEVER return an empty plan or "-" reasoning for these queries. The data is provided; use it.
 
 {PLAN_JSON_SCHEMA}
 """

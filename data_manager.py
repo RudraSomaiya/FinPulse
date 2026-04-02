@@ -80,6 +80,22 @@ def load_recommendations(path: str = DEFAULT_REC_PATH) -> pd.DataFrame:
         df = pd.read_excel(path)
     except Exception:
         return pd.DataFrame()
+        
+    client_details_path = "client-details.xlsx"
+    if os.path.exists(client_details_path):
+        try:
+            client_details = pd.read_excel(client_details_path)
+            cols_to_drop = [c for c in ["Client_Birthdate", "Client_phone_number", "Client_email"] if c in df.columns]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+            if "Client" in client_details.columns and "Client" in df.columns:
+                target_cols = ["Client_Birthdate", "Client_phone_number", "Client_email"]
+                available_cols = [c for c in target_cols if c in client_details.columns]
+                if available_cols:
+                    df = pd.merge(df, client_details[["Client"] + available_cols], on="Client", how="left")
+        except Exception:
+            pass
+
     if "Cluster" not in df.columns and "Cluster_Name" in df.columns:
         df = df.rename(columns={"Cluster_Name": "Cluster"})
     for col in ["Client", "Cluster"]:
@@ -178,6 +194,10 @@ def save_recommendations(
             backup_path = f"{root}.backup_{ts}{ext}"
             shutil.copy2(path, backup_path)
         out = df.copy()
+        
+        cols_to_drop = ["Client_Birthdate", "Client_phone_number", "Client_email"]
+        out = out.drop(columns=[c for c in cols_to_drop if c in out.columns])
+        
         if "EventDate" in out.columns:
             out["EventDate"] = pd.to_datetime(out["EventDate"], errors="coerce")
         out.to_excel(path, index=False)

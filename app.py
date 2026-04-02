@@ -28,6 +28,23 @@ st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
 def load_recos(path, mtime):
     """Load recommendations with cache keyed by file path and modification time."""
     df = pd.read_excel(path)
+    
+    # Merge client details
+    client_details_path = "client-details.xlsx"
+    if os.path.exists(client_details_path):
+        try:
+            client_details = pd.read_excel(client_details_path)
+            cols_to_drop = [c for c in ["Client_Birthdate", "Client_phone_number", "Client_email"] if c in df.columns]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+            if "Client" in client_details.columns and "Client" in df.columns:
+                target_cols = ["Client_Birthdate", "Client_phone_number", "Client_email"]
+                available_cols = [c for c in target_cols if c in client_details.columns]
+                if available_cols:
+                    df = pd.merge(df, client_details[["Client"] + available_cols], on="Client", how="left")
+        except Exception:
+            pass
+
     # Map common alternative names
     if "Cluster" not in df.columns and "Cluster_Name" in df.columns:
         df = df.rename(columns={"Cluster_Name": "Cluster"})

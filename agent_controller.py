@@ -61,16 +61,36 @@ Dates must be YYYY-MM-DD. For recommendation_changes, field can be Recommended_A
 """
 
 
+def _extract_mentioned_clients(query: str, client_df: pd.DataFrame) -> set[str]:
+    """Extract client IDs explicitly mentioned in the user query (e.g. B10, B56).
+    Uses word-boundary matching to avoid false positives (B10 should not match B1 or B100).
+    """
+    mentioned = set()
+    if client_df is not None and not client_df.empty and "Client" in client_df.columns:
+        all_ids = {str(c).strip() for c in client_df["Client"].dropna().unique()}
+        for cid in all_ids:
+            if cid and re.search(rf'\b{re.escape(cid)}\b', query):
+                mentioned.add(cid)
+    return mentioned
+
+
 def _build_data_context(
     client_df: pd.DataFrame,
     reminders_df: pd.DataFrame,
     today: date,
     tx_df: pd.DataFrame | None = None,
+    query: str = "",
 ) -> str:
     """Run read-only tools and build a context string for the LLM.
     Uses Recommended_ProductType only for product-type lists (so 'ETF clients' = clients we recommend ETF to).
+
+    When transaction data is provided, context is built in two tiers:
+    - ALWAYS: compact per-product-type cross-references (client lists with first/last tx dates)
+    - SELECTIVELY: full per-client TX details only for clients explicitly named in the query
+    This keeps context compact for bulk queries while providing detail for specific client lookups.
     """
     lines = [f"Today's date: {today.isoformat()}"]
+    mentioned_clients = _extract_mentioned_clients(query, client_df) if query else set()
 
     if client_df is not None and not client_df.empty:
         if "Recommended_ProductType" in client_df.columns:
@@ -96,26 +116,28 @@ def _build_data_context(
                     f"{ptype} clients by Recommended_ProductType ordered by Total_Transactions "
                     f"(first {len(clients)} of {total_count}): {', '.join(clients)}"
                 )
-            # Full list of this product type's clients with birth dates this year (for "wish X on birthdays" queries)
+            # Full list of this product type's clients with birth dates this year
             bd_sub = get_birthdays(sub, year=today.year)
             if not bd_sub.empty and "Client" in bd_sub.columns and "birth_date" in bd_sub.columns:
                 rows = bd_sub.apply(lambda r: f"{r['Client']} ({r['birth_date']})", axis=1).tolist()
                 lines.append(f"All {ptype} clients with birth dates in {today.year}: {', '.join(rows)}")
-            # Pre-computed cross-reference: product-type clients with their first/last transaction dates
-            # This helps the LLM handle compound queries like "set up meeting with all ETF clients 2 years after first transaction"
+            # Compact cross-reference: product-type clients with first and last transaction dates
             if tx_df is not None and not tx_df.empty and "Client number" in tx_df.columns and "Transaction Date" in tx_df.columns:
                 tx_dated = tx_df.copy()
                 tx_dated["Transaction Date"] = pd.to_datetime(tx_dated["Transaction Date"], errors="coerce")
-                tx_first = tx_dated.dropna(subset=["Transaction Date"]).groupby("Client number")["Transaction Date"].min().reset_index()
-                tx_first.columns = ["Client", "first_tx_date"]
-                tx_first["Client"] = tx_first["Client"].astype(str).str.strip()
+                tx_dated_clean = tx_dated.dropna(subset=["Transaction Date"])
+                tx_agg = tx_dated_clean.groupby("Client number")["Transaction Date"].agg(["min", "max"]).reset_index()
+                tx_agg.columns = ["Client", "first_tx", "last_tx"]
+                tx_agg["Client"] = tx_agg["Client"].astype(str).str.strip()
                 ptype_client_ids = set(c.strip() for c in clients)
-                tx_ptype = tx_first[tx_first["Client"].isin(ptype_client_ids)].copy()
+                tx_ptype = tx_agg[tx_agg["Client"].isin(ptype_client_ids)].copy()
                 if not tx_ptype.empty:
                     tx_rows = []
-                    for _, tr in tx_ptype.sort_values("first_tx_date").iterrows():
-                        tx_rows.append(f"{tr['Client']} (first_tx={tr['first_tx_date'].strftime('%Y-%m-%d')})")
-                    lines.append(f"All {ptype} clients with first transaction dates: {', '.join(tx_rows)}")
+                    for _, tr in tx_ptype.sort_values("first_tx").iterrows():
+                        tx_rows.append(
+                            f"{tr['Client']} (first_tx={tr['first_tx'].strftime('%Y-%m-%d')}, last_tx={tr['last_tx'].strftime('%Y-%m-%d')})"
+                        )
+                    lines.append(f"All {ptype} clients with transaction dates: {', '.join(tx_rows)}")
         # General birthdays this year (all clients, sample if many)
         bd = get_birthdays(client_df, year=today.year)
         if not bd.empty and "Client" in bd.columns and "birth_date" in bd.columns:
@@ -142,13 +164,12 @@ def _build_data_context(
         lines.append("\n--- TRANSACTION HISTORY (cleaned_data.xlsx) ---")
         col_client = "Client number"
         col_prod = "Product Type"
-        col_prod_name = "Product Name"
         col_amt = "Transaction Amount (SGD)"
         col_date = "Transaction Date"
 
         lines.append(f"Total transaction rows: {len(tx_df)}")
 
-        # Per-product-type aggregation
+        # Per-product-type aggregation (always included — compact)
         if col_prod in tx_df.columns:
             prod_agg = tx_df.groupby(col_prod).agg(
                 count=(col_prod, "size"),
@@ -165,21 +186,20 @@ def _build_data_context(
                     prod_lines.append(f"{ptype}: {cnt} txns")
             lines.append("Product type breakdown: " + "; ".join(prod_lines))
 
-        # Per-client summary: first purchase, last purchase, products, total amount
-        # This is the KEY data the LLM needs for queries like "1 year after first purchase"
-        if col_client in tx_df.columns and col_date in tx_df.columns:
+        # Detailed per-client TX summary — ONLY for clients explicitly named in the query
+        # Bulk queries ("all ETF clients") use the compact per-product cross-references above instead
+        if mentioned_clients and col_client in tx_df.columns and col_date in tx_df.columns:
             tx_dated = tx_df.copy()
             tx_dated[col_date] = pd.to_datetime(tx_dated[col_date], errors="coerce")
-            lines.append("\nPer-client transaction summary (first_purchase | last_purchase | products | total_amount | txn_count):")
-            for cid, grp in tx_dated.groupby(col_client):
-                cid_str = str(cid).strip()
+            lines.append("\nDetailed transaction summary for mentioned clients:")
+            for cid in sorted(mentioned_clients):
+                grp = tx_dated[tx_dated[col_client].astype(str).str.strip() == cid]
+                if grp.empty:
+                    lines.append(f"  {cid}: no transactions found")
+                    continue
                 dated = grp.dropna(subset=[col_date])
-                if dated.empty:
-                    first_dt = "-"
-                    last_dt = "-"
-                else:
-                    first_dt = dated[col_date].min().strftime("%Y-%m-%d")
-                    last_dt = dated[col_date].max().strftime("%Y-%m-%d")
+                first_dt = dated[col_date].min().strftime("%Y-%m-%d") if not dated.empty else "-"
+                last_dt = dated[col_date].max().strftime("%Y-%m-%d") if not dated.empty else "-"
                 products = sorted({str(p).strip() for p in grp[col_prod].dropna().astype(str).tolist()}) if col_prod in grp.columns else []
                 total_amt = None
                 if col_amt in grp.columns and not grp[col_amt].isna().all():
@@ -190,7 +210,7 @@ def _build_data_context(
                 amt_s = f"{total_amt:,.0f} SGD" if total_amt is not None else "-"
                 cnt = len(grp)
                 lines.append(
-                    f"  {cid_str}: first={first_dt} | last={last_dt} | "
+                    f"  {cid}: first={first_dt} | last={last_dt} | "
                     f"products={', '.join(products) if products else '-'} | "
                     f"total={amt_s} | count={cnt}"
                 )
@@ -284,7 +304,7 @@ def generate_plan(
     rec_schema = get_recommendation_schema()
     rem_schema = get_reminder_schema()
     tx_schema = get_transaction_schema()
-    data_ctx = _build_data_context(client_df, reminders_df, today, tx_df=tx_df)
+    data_ctx = _build_data_context(client_df, reminders_df, today, tx_df=tx_df, query=user_query)
 
     prompt = f"""You are a data-aware AI agent that manages a client recommendation dataset, a calendar (reminders), and has access to actual transaction history.
 You must output a JSON execution plan. No changes are applied until the user confirms.
@@ -297,24 +317,24 @@ SCHEMAS:
 DATA CONTEXT (use these exact client IDs and dates; do not invent clients):
 {data_ctx}
 
-When the user asks about past purchases, transaction history, first/last purchase dates, or "who bought X", you MUST use the "Per-client transaction summary" in the TRANSACTION HISTORY section above. Each line shows: client_id: first=YYYY-MM-DD | last=YYYY-MM-DD | products=... | total=... | count=N. Use the "first" date for first purchase queries and the "last" date for last/recent purchase queries. When they ask about recommended products or model predictions, use the Recommendation data.
-
 USER REQUEST:
 {user_query}
 
-For ANY request about birthdays or birthdates (e.g. "wish X on birthdays", "call clients on their birthdates"): use the exact list "All X clients with birth dates in YYYY" from DATA CONTEXT. For each event that is on a client's birth date you MUST set "use_client_birthdate": true so the system uses the real date from the data; do not invent or guess dates.
+INSTRUCTIONS:
+1. The DATA CONTEXT above contains several data sources. You MUST cross-reference them as needed:
+   - "<PRODUCT> clients by Recommended_ProductType ..." — client lists per product type.
+   - "All <PRODUCT> clients with transaction dates: ..." — each product-type client's first_tx and last_tx dates.
+   - "All <PRODUCT> clients with birth dates in YYYY: ..." — birth dates.
+   - "Detailed transaction summary for mentioned clients:" — full TX details for specifically named clients.
+   Use whichever sources are relevant to resolve the user's request. Combine and cross-reference them as needed.
 
-For ANY request of the form "top K <PRODUCT> clients" (for example "top 7 STOCK clients by number of transactions"), you MUST:
-- Treat K as the requested number.
-- Look at the "<PRODUCT> clients by Recommended_ProductType ordered by Total_Transactions (first N of TOTAL): ..." line in DATA CONTEXT.
-- Select the first min(K, TOTAL) distinct client IDs from that ordered list and create events for ALL of them. Do NOT arbitrarily cap this at 3.
+2. When the request involves a group of clients (e.g. "all ETF clients", "top 5 STOCK clients"), you MUST create events for ALL matching clients from the DATA CONTEXT, not just a sample.
 
-For ANY request that combines a product type filter with transaction date arithmetic (e.g. "set up meeting with all ETF clients 2 years after their first transaction"), you MUST:
-1. Look at the "All <PRODUCT> clients with first transaction dates: ..." line in DATA CONTEXT. This gives each client's first transaction date.
-2. For EACH client in that list, compute the target date by adding the requested offset (e.g. +2 years) to their first_tx date.
-3. Create one event per client with the computed date. You MUST create events for ALL clients in the list, not just a sample.
-4. If a computed date falls in the past, still include it — the user may want a historical record.
-5. NEVER return an empty plan or "-" reasoning for these queries. The data is provided; use it.
+3. When the request involves date arithmetic relative to transaction dates (e.g. "2 years after first transaction", "6 months after last purchase"), compute the target date for EACH client individually using their first_tx or last_tx from the data. Dates in the past are acceptable.
+
+4. For ANY event on a client's birthdate, you MUST set "use_client_birthdate": true. The system will use the real Client_Birthdate from the data. Do not invent birth dates.
+
+5. NEVER return an empty plan or "-" as reasoning when the data to fulfill the request is present in the DATA CONTEXT.
 
 {PLAN_JSON_SCHEMA}
 """

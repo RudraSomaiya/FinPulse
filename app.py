@@ -17,6 +17,9 @@ from calendar_tools import create_event as cal_create_event, update_event as cal
 from client_tools import get_client_birth_date
 import email_sender
 import whatsapp_sender
+from audio_recorder_streamlit import audio_recorder
+import hashlib
+from stt_engine import transcribe_audio_bytes
 
 TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
@@ -335,18 +338,49 @@ if "agent_query" not in st.session_state:
     st.session_state["agent_query"] = ""
 
 with st.expander("AI Agent", expanded=bool(st.session_state.get("agent_plan"))):
-    agent_query = st.text_input("Request", value=st.session_state["agent_query"], key="agent_request")
-    col_run, _ = st.columns([1, 3])
-    if col_run.button("Generate plan", key="agent_run"):
-        if not (agent_query or "").strip():
+    # No key= on text_input — allows st.session_state["agent_query"] to be freely
+    # updated before rerun (Streamlit blocks writes to a widget's own key after render).
+    agent_query = st.text_input("Request", value=st.session_state["agent_query"])
+    
+    col_run, _, col_mic = st.columns([1.5, 6, 1.5])
+    
+    with col_run:
+        run_clicked = st.button("Generate plan", key="agent_run")
+        
+    with col_mic:
+        st.markdown("<div style='text-align: right;'>", unsafe_allow_html=True)
+        audio_bytes = audio_recorder(text="", icon_name="microphone", icon_size="2x")
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+    if audio_bytes:
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+        # Prevent re-processing the same clip on every Streamlit rerun
+        if st.session_state.get("last_processed_audio") != audio_hash:
+            with st.spinner("🎙️ Transcribing audio..."):
+                transcript = transcribe_audio_bytes(audio_bytes)
+                if transcript:
+                    # agent_query holds what the user typed; append the transcript to it.
+                    # We write to agent_query (not the widget key) — safe because there's no key.
+                    current = (agent_query or "").strip()
+                    st.session_state["agent_query"] = (current + " " + transcript).strip() if current else transcript
+                    st.session_state["last_processed_audio"] = audio_hash
+                    st.rerun()
+                else:
+                    st.session_state["last_processed_audio"] = audio_hash
+                    st.toast("Transcription empty. Please check your microphone.")
+
+    if run_clicked:
+        # agent_query is the return value of the text_input — always up to date
+        latest_query = (agent_query or "").strip()
+        if not latest_query:
             st.warning("Enter a request.")
         else:
-            st.session_state["agent_query"] = (agent_query or "").strip()
+            st.session_state["agent_query"] = latest_query
             with st.spinner("Generating plan..."):
                 try:
                     client_df = st.session_state.get("applied_df") if isinstance(st.session_state.get("applied_df"), pd.DataFrame) and len(st.session_state.get("applied_df", [])) > 0 else df
                     rem_df = st.session_state.get("reminders_df", reminders_df)
-                    plan = agent_generate_plan((agent_query or "").strip(), client_df=client_df, reminders_df=rem_df, profile_text=_profile_text, tx_df=tx_df)
+                    plan = agent_generate_plan(latest_query, client_df=client_df, reminders_df=rem_df, profile_text=_profile_text, tx_df=tx_df)
                     st.session_state["agent_plan"] = plan
                     st.session_state["agent_preview"] = preview_simulate(plan, rem_df, client_df)
                 except Exception as e:

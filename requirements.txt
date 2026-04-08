@@ -14,4 +14,5 @@ requests>=2.32.3
 python-dotenv>=1.0.1
 yfinance>=0.2.50
 nbformat
-ipykernel>=7.1.0
+ipykernel>=7.1.0faster-whisper
+audio-recorder-streamlit

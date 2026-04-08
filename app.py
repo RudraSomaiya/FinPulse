@@ -840,6 +840,10 @@ if clicked_date:
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             
+            # Helper to check if MO is generated
+            mo_val = st.session_state["market_outlook_text"]
+            is_mo_generated = "Click 'Generate" not in mo_val and "Market outlook is not available" not in mo_val
+
             # Market outlook section with generate and edit buttons
             col_outlook, col_generate, col_edit = st.columns([3, 1, 1])
             with col_outlook:
@@ -849,20 +853,22 @@ if clicked_date:
                     if _profile_text and _outlook_text:
                         with st.spinner("Generating market outlook..."):
                             st.session_state["market_outlook_text"] = generate_market_outlook(_profile_text, _outlook_text)
+                            st.rerun()
                     else:
                         st.session_state["market_outlook_text"] = "Market outlook is not available (missing profile or source text)."
                         st.warning("Missing writing profile or source market outlook text.")
             with col_edit:
-                if st.button("✏️", key="edit_market_outlook", help="Edit market outlook"):
-                    st.session_state["edit_market_outlook"] = True
-                    st.rerun()
+                if is_mo_generated:
+                    if st.button("✏️", key="btn_edit_mo", help="Edit market outlook"):
+                        st.session_state["is_editing_mo"] = True
+                        st.rerun()
             
             # Check if market outlook is in edit mode
-            if st.session_state.get("edit_market_outlook", False):
+            if st.session_state.get("is_editing_mo", False):
                 edited_outlook = st.text_area(
                     "Edit Market Outlook:",
                     value=st.session_state.get("market_outlook_text", ""),
-                    key="edit_outlook_text",
+                    key="ta_edit_outlook_text",
                     height=200
                 )
                 
@@ -870,11 +876,11 @@ if clicked_date:
                 with col_save:
                     if st.button("💾 Save", key="save_outlook"):
                         st.session_state["market_outlook_text"] = edited_outlook
-                        st.session_state["edit_market_outlook"] = False
+                        st.session_state["is_editing_mo"] = False
                         st.rerun()
                 with col_cancel:
                     if st.button("❌ Cancel", key="cancel_outlook"):
-                        st.session_state["edit_market_outlook"] = False
+                        st.session_state["is_editing_mo"] = False
                         st.rerun()
             else:
                 st.markdown(st.session_state.get("market_outlook_text", "-"))
@@ -925,8 +931,9 @@ if clicked_date:
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             
-            # Client plan section with generate button
-            col_plan, col_generate = st.columns([4, 1])
+            # Future plan section with generate and edit buttons
+            is_plan_generated = "Click 'Generate Plan'" not in plan_text
+            col_plan, col_generate, col_edit_plan = st.columns([3, 1, 1])
             with col_plan:
                 st.markdown("**Future Plan (AI Advisor)**")
             with col_generate:
@@ -934,8 +941,34 @@ if clicked_date:
                     with st.spinner("Generating future plan..."):
                         plan_text = generate_client_plan(plan_context)
                         cache[cache_key] = plan_text
+                        st.rerun()
+            with col_edit_plan:
+                if is_plan_generated:
+                    if st.button("✏️", key=f"btn_edit_plan_{cache_key}", help="Edit future plan"):
+                        st.session_state[f"is_editing_plan_{cache_key}"] = True
+                        st.rerun()
 
-            st.markdown(plan_text)
+            # Check if future plan is in edit mode
+            if st.session_state.get(f"is_editing_plan_{cache_key}", False):
+                edited_plan = st.text_area(
+                    "Edit Future Plan:",
+                    value=plan_text,
+                    key=f"ta_edit_plan_{cache_key}",
+                    height=200
+                )
+                
+                col_save_plan, col_cancel_plan = st.columns([1, 1])
+                with col_save_plan:
+                    if st.button("💾 Save", key=f"save_plan_{cache_key}"):
+                        cache[cache_key] = edited_plan
+                        st.session_state[f"is_editing_plan_{cache_key}"] = False
+                        st.rerun()
+                with col_cancel_plan:
+                    if st.button("❌ Cancel", key=f"cancel_plan_{cache_key}"):
+                        st.session_state[f"is_editing_plan_{cache_key}"] = False
+                        st.rerun()
+            else:
+                st.markdown(plan_text)
 
             # Email / WhatsApp sending section
             st.markdown("---")

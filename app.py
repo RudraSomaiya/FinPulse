@@ -25,7 +25,18 @@ TICKER_OVERRIDES = {
     "TENCENT": "0700.HK",
 }
 
-st.set_page_config(page_title="Client Recommendations Calendar", layout="wide")
+st.set_page_config(page_title="FinPulse Calendar", layout="wide")
+
+st.sidebar.image("aigenthix-BXPI47w2.webp", use_container_width=True)
+
+st.markdown(
+    """
+    <div style='text-align: center; padding-top: 1rem; padding-bottom: 2rem;'>
+        <h1 style='font-size: 4.5rem; font-weight: 800; margin: 0; background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 50%, #10b981 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>FinPulse</h1>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 @st.cache_data(show_spinner=False)
 def load_recos(path, mtime):

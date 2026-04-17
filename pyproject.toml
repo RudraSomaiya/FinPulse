@@ -23,4 +23,5 @@ dependencies = [
     "ipykernel>=7.1.0",
     "nbformat",
     "audio-recorder-streamlit>=0.0.10",
+    "faster-whisper",
 ]

@@ -8,7 +8,7 @@ app = FastAPI(title="FinPulse API", version="1.0.0", description="Financial advi
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=["*"],  # For demo, allow all. Update with your frontend URL later for security.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
